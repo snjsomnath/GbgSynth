@@ -65,7 +65,8 @@ class PopulationSynthesizer:
         household_data: pd.DataFrame,
         income_data: Optional[pd.DataFrame] = None,
         car_data: Optional[pd.DataFrame] = None,
-        buildings: Optional[pd.DataFrame] = None
+        buildings: Optional[pd.DataFrame] = None,
+        household_position_data: Optional[pd.DataFrame] = None
     ) -> Tuple[List[Agent], List[Household]]:
         """
         Main synthesis method coordinating all phases.
@@ -77,11 +78,19 @@ class PopulationSynthesizer:
             car_data: Optional DataFrame with car ownership
             buildings: Optional DataFrame/GeoDataFrame with building footprints
                       for spatial linking
+            household_position_data: Optional DataFrame with detailed household 
+                      positions (including child role) by age/sex
 
         Returns:
             Tuple of (agents, households)
         """
         logger.info("Starting population synthesis")
+        
+        # Store household position data for role assignment
+        self._household_position_data = household_position_data
+        if household_position_data is not None:
+            self._build_role_probability_table(household_position_data)
+            logger.info("Built role probability table from household position data")
 
         if self.use_topdown:
             # Top-down constrained synthesis: anchor households first, then fill

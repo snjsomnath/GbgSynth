@@ -99,6 +99,7 @@ class GbgArea:
         logger.info("Fetching census data...")
         population_data = self._fetch_population_data()
         household_data = self._fetch_household_data()
+        household_position_data = self._fetch_household_position_data()  # Detailed roles
         income_data = self._fetch_income_data()
         car_data = self._fetch_car_data()
         
@@ -106,6 +107,7 @@ class GbgArea:
         self._marginals = {
             'population': population_data.copy(),
             'household': household_data.copy(),
+            'household_position': household_position_data.copy() if household_position_data is not None else None,
             'income': income_data.copy() if income_data is not None else None
         }
 
@@ -122,7 +124,8 @@ class GbgArea:
             household_data=household_data,
             income_data=income_data,
             car_data=car_data,
-            buildings=buildings
+            buildings=buildings,
+            household_position_data=household_position_data  # Pass detailed role data
         )
         
         # Store IPF statistics if used
@@ -638,6 +641,40 @@ class GbgArea:
                 except:
                     continue
             logger.warning(f"Income data not available: {e}")
+            return None
+
+    def _fetch_household_position_data(self) -> Optional[pd.DataFrame]:
+        """
+        Fetch detailed household position data (includes child role).
+        
+        This table provides age×sex×position breakdown where position includes:
+        - Person i gift par (married/partnered) -> cohabiting
+        - Personer i samboförhållande (cohabiting) -> cohabiting
+        - Ensamstående förälder (single parent) -> single
+        - Barn (child) -> child
+        - Ensamboende (living alone) -> single
+        - Ej ensamboende personer, övriga (other) -> other
+        """
+        table_path = self.config.get_table_id('HOUSEHOLD_POSITION')
+        
+        if not table_path:
+            logger.warning("HOUSEHOLD_POSITION table not configured, using default roles")
+            return None
+        
+        try:
+            df = self.client.query_all_variables(table_path, self.area_api_value, self.year)
+            logger.info(f"Fetched {len(df)} household position records")
+            return df
+        except Exception as e:
+            # Try previous years
+            for fallback_year in [self.year - 1, self.year - 2, 2021, 2020]:
+                try:
+                    df = self.client.query_all_variables(table_path, self.area_api_value, fallback_year)
+                    logger.info(f"Fetched {len(df)} household position records (using {fallback_year} data)")
+                    return df
+                except:
+                    continue
+            logger.warning(f"Household position data not available: {e}")
             return None
 
     def _fetch_car_data(self) -> Optional[pd.DataFrame]:
