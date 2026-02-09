@@ -473,7 +473,7 @@ def main():
     
     # Areas to skip (zero population or known data issues)
     SKIP_AREAS = {
-        '199',  # Ospecificerat (unspecified) - zero population
+        '199',  # Ospecificerat (unspecified) - zero population, no geographic area
     }
     
     # Areas with known data quality warnings (will still be processed)
@@ -531,11 +531,7 @@ def main():
             area = city.get_area(code)
             
             # Generate synthetic population
-            area.generate(
-                use_topdown=use_topdown,
-                use_constrained_ipf=use_constrained_ipf,
-                use_ipf=use_ipf
-            )
+            area.generate()
             
             execution_time = (datetime.now() - start_time).total_seconds()
             result['execution_time'] = execution_time
@@ -564,18 +560,22 @@ def main():
             result['status'] = 'success'
             successful += 1
             
-            # Log summary
-            rmse = comparisons.get('overall', {}).get('rmse', 'N/A')
-            corr = comparisons.get('overall', {}).get('correlation', 'N/A')
+            # Log summary with new MAPE metric
+            ov = comparisons.get('overall', {})
+            rmse = ov.get('rmse', 'N/A')
+            mape = ov.get('mape', 'N/A')  # Mean Absolute Percentage Error - more honest than correlation
+            corr = ov.get('correlation', 'N/A')
             if isinstance(rmse, float):
                 rmse = f"{rmse:.1f}"
+            if isinstance(mape, float):
+                mape = f"{mape:.1f}%"
             if isinstance(corr, float):
                 corr = f"{corr:.4f}"
             
             logger.info(
                 f"  ✅ {stats['total_population']:,} individuals, "
                 f"{stats['total_households']:,} households | "
-                f"RMSE: {rmse}, Corr: {corr} | "
+                f"MAPE: {mape}, Corr: {corr} | "
                 f"{execution_time:.1f}s"
             )
             
@@ -650,36 +650,40 @@ def main():
         total_pop = sum(r['stats']['total_population'] for r in success_results if r['stats'])
         total_hh = sum(r['stats']['total_households'] for r in success_results if r['stats'])
         
-        correlations = [
-            r['comparisons']['overall']['correlation']
-            for r in success_results
-            if r['comparisons'] and 'overall' in r['comparisons']
-        ]
-        avg_rmse = np.mean([
-            r['comparisons']['overall']['rmse']
-            for r in success_results
-            if r['comparisons'] and 'overall' in r['comparisons']
-        ])
-        avg_corr = np.mean(correlations)
+        # Collect metrics
+        correlations = []
+        mapes = []
+        rmses = []
+        for r in success_results:
+            if r['comparisons'] and 'overall' in r['comparisons']:
+                ov = r['comparisons']['overall']
+                correlations.append(ov.get('correlation', 0))
+                mapes.append(ov.get('mape', 0))
+                rmses.append(ov.get('rmse', 0))
         
-        # Quality grade breakdown
-        grade_a = sum(1 for c in correlations if c >= 0.99)
-        grade_b = sum(1 for c in correlations if 0.98 <= c < 0.99)
-        grade_c = sum(1 for c in correlations if 0.97 <= c < 0.98)
-        grade_d = sum(1 for c in correlations if 0.95 <= c < 0.97)
-        grade_f = sum(1 for c in correlations if c < 0.95)
+        avg_rmse = np.mean(rmses) if rmses else 0
+        avg_corr = np.mean(correlations) if correlations else 0
+        avg_mape = np.mean(mapes) if mapes else 0
+        
+        # Quality grade breakdown by MAPE (more honest grading)
+        grade_a = sum(1 for m in mapes if m <= 5)      # ≤5% MAPE
+        grade_b = sum(1 for m in mapes if 5 < m <= 10)  # 5-10% MAPE
+        grade_c = sum(1 for m in mapes if 10 < m <= 15) # 10-15% MAPE
+        grade_d = sum(1 for m in mapes if 15 < m <= 25) # 15-25% MAPE
+        grade_f = sum(1 for m in mapes if m > 25)       # >25% MAPE
         
         logger.info(f"  Total Population:        {total_pop:,}")
         logger.info(f"  Total Households:        {total_hh:,}")
         logger.info(f"  Average RMSE:            {avg_rmse:.2f}")
+        logger.info(f"  Average MAPE:            {avg_mape:.1f}%")
         logger.info(f"  Average Correlation:     {avg_corr:.4f}")
         logger.info("")
-        logger.info("  Quality Grades (by correlation):")
-        logger.info(f"    A (≥0.99):  {grade_a:3d} areas")
-        logger.info(f"    B (≥0.98):  {grade_b:3d} areas")
-        logger.info(f"    C (≥0.97):  {grade_c:3d} areas")
-        logger.info(f"    D (≥0.95):  {grade_d:3d} areas")
-        logger.info(f"    F (<0.95):  {grade_f:3d} areas")
+        logger.info("  Quality Grades (by MAPE - treats all categories equally):")
+        logger.info(f"    A (≤5%):   {grade_a:3d} areas")
+        logger.info(f"    B (≤10%):  {grade_b:3d} areas")
+        logger.info(f"    C (≤15%):  {grade_c:3d} areas")
+        logger.info(f"    D (≤25%):  {grade_d:3d} areas")
+        logger.info(f"    F (>25%):  {grade_f:3d} areas")
     
     logger.info("")
     logger.info(f"Output files saved to: {output_dir}")

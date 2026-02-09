@@ -4,8 +4,8 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/gbgsynth.git
-cd gbgsynth
+git clone https://github.com/snjsomnath/GbgSynth.git
+cd GbgSynth
 
 # Install in development mode
 pip install -e .

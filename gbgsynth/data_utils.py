@@ -249,6 +249,14 @@ def is_areas_json_available(areas_json_path: Optional[Path] = None) -> bool:
     return path.exists()
 
 
+# Mapping of area names from shapefile to PxWeb API names
+# The shapefile sometimes uses different spellings/casing than the PxWeb API expects
+# Format: {area_code: "Correct API Name"}
+AREA_NAME_CORRECTIONS = {
+    "604": "Angereds Centrum",  # Shapefile has "Angereds centrum", API expects "Angereds Centrum"
+}
+
+
 def generate_areas_json(
     shapefile_path: Optional[Path] = None,
     output_path: Optional[Path] = None,
@@ -261,6 +269,9 @@ def generate_areas_json(
     
     Reads the shapefile and creates a JSON file mapping area codes
     to their names and full identifiers.
+    
+    Note: Some area names in the shapefile differ from those expected by
+    the PxWeb API. These are corrected using the AREA_NAME_CORRECTIONS mapping.
     
     Args:
         shapefile_path: Path to the shapefile (default: bundled shapefile)
@@ -312,6 +323,13 @@ def generate_areas_json(
         for _, row in gdf.iterrows():
             code = str(row[area_code_column])
             name = str(row[area_name_column])
+            
+            # Apply name corrections for areas where shapefile differs from API
+            if code in AREA_NAME_CORRECTIONS:
+                corrected_name = AREA_NAME_CORRECTIONS[code]
+                logger.debug(f"Correcting area {code} name: '{name}' -> '{corrected_name}'")
+                name = corrected_name
+            
             areas[code] = {
                 "name": name,
                 "full": f"{code} {name}"

@@ -11,6 +11,105 @@ from gbgsynth.models import Agent, Household
 from gbgsynth.synthesizer import PopulationSynthesizer
 from gbgsynth.ipf import IPFSynthesizer
 from gbgsynth.config import Config
+from gbgsynth import GbgSynth, GbgArea
+
+
+class TestEndToEndSynthesis:
+    """End-to-end tests for full synthesis workflow."""
+
+    @pytest.fixture
+    def city(self):
+        """Create a GbgSynth instance."""
+        return GbgSynth(year=2023)
+
+    def test_synthesize_single_area(self, city):
+        """Test synthesizing a single area end-to-end."""
+        # Use a small area for faster testing
+        area = city.synthesize("Haga")
+        
+        # Verify basic outputs
+        assert area._is_generated
+        assert len(area.individuals) > 0
+        assert len(area.households) > 0
+        
+        # Verify relationships
+        for ind in area.individuals:
+            assert ind.household_id is not None
+        
+        # Verify all agents are in households
+        agent_ids = {a.agent_id for a in area.individuals}
+        for hh in area.households:
+            for member in hh.members:
+                assert member.agent_id in agent_ids
+
+    def test_synthesis_statistics(self, city):
+        """Test that synthesis produces valid statistics."""
+        area = city.synthesize("Haga")
+        stats = area.get_summary_statistics()
+        
+        # Verify statistics are computed correctly
+        assert stats['total_population'] == len(area.individuals)
+        assert stats['total_households'] == len(area.households)
+        assert stats['avg_household_size'] > 0
+        assert stats['num_children'] >= 0
+        assert stats['num_adults'] >= 0
+        assert stats['num_children'] + stats['num_adults'] == stats['total_population']
+
+    def test_marginal_comparison(self, city):
+        """Test that marginal comparison works correctly."""
+        area = city.synthesize("Haga")
+        comparison = area.compare_to_marginals(print_report=False)
+        
+        # Verify comparison structure
+        assert 'overall' in comparison
+        assert 'sex' in comparison
+        assert 'age' in comparison
+        
+        # Verify overall statistics
+        overall = comparison['overall']
+        assert 'correlation' in overall
+        assert 'rmse' in overall
+        assert 'mae' in overall
+        
+        # Correlation should be high for good synthesis
+        assert overall['correlation'] > 0.9
+
+    def test_dataframe_export(self, city):
+        """Test that DataFrame export works correctly."""
+        area = city.synthesize("Haga")
+        
+        # Get DataFrames
+        ind_df = area.individuals_df
+        hh_df = area.households_df
+        
+        # Verify DataFrame structure
+        assert len(ind_df) == len(area.individuals)
+        assert len(hh_df) == len(area.households)
+        
+        # Verify required columns
+        assert 'age' in ind_df.columns
+        assert 'sex' in ind_df.columns
+        assert 'household_id' in ind_df.columns
+        
+        assert 'household_id' in hh_df.columns
+        assert 'size' in hh_df.columns
+
+    def test_list_areas(self, city):
+        """Test that listing areas works."""
+        areas = city.list_areas()
+        assert len(areas) > 0
+        assert 'Haga' in areas
+
+    def test_get_area_by_code(self, city):
+        """Test getting area by code."""
+        area = city.get_area("107")
+        assert area.area_code == "107"
+        assert "Haga" in area.area_name
+
+    def test_get_area_by_name(self, city):
+        """Test getting area by name."""
+        area = city.get_area("Haga")
+        assert area.area_code == "107"
 
 
 class TestModelsIntegration:

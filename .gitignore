@@ -69,5 +69,8 @@ results/
 quickstart_population.csv
 haga_*.csv
 
+# Generated plots in root (examples should save to plots/)
+/*.png
+
 # API cache
 .gbgsynth_cache/

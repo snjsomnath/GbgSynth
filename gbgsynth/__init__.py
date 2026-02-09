@@ -9,6 +9,8 @@ Simple API:
 For advanced usage, see the documentation.
 """
 
+__version__ = "0.3.0"
+
 # Core API - what most users need
 from gbgsynth.gbgsynth import GbgSynth
 from gbgsynth.area import GbgArea
@@ -27,6 +29,14 @@ from gbgsynth.exceptions import (
 # Optional modules (import explicitly if needed)
 from gbgsynth import plotting
 from gbgsynth import validation
+
+# Sanity checks for population validation
+from gbgsynth.sanity_checks import (
+    run_all_checks,
+    validate_population,
+    SanityCheckResult,
+    SanityViolation,
+)
 
 # Data utilities for managing bundled data
 from gbgsynth.data_utils import (

@@ -7,7 +7,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="gbgsynth",
-    version="0.1.0",
+    version="0.3.0",
     author="Sanjay Somanath",
     author_email="sanjay.somanath@chalmers.se",
     description="Synthetic population generator for Gothenburg using PxWeb API",

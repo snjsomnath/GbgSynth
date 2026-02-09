@@ -422,67 +422,31 @@ class PopulationSynthesizer:
         # === Phase 2: Generate individual pool from marginals ===
         logger.info("Top-down Phase 2: Generating individuals from marginals")
         
-        age_col = 'Ålder' if 'Ålder' in population_data.columns else 'age_group'
-        sex_col = 'Kön' if 'Kön' in population_data.columns else 'sex'
-        role_col = 'Hushållstyp' if 'Hushållstyp' in population_data.columns else 'hh_role'
-        
-        # Check if we have detailed position data for role assignment
-        use_detailed_roles = (
+        # Check if we have detailed position data - use it directly for exact role counts
+        use_position_data_directly = (
             hasattr(self, '_household_position_data') and 
             self._household_position_data is not None and
-            hasattr(self, '_role_probs') and 
-            bool(self._role_probs)
+            len(self._household_position_data) > 0
         )
         
-        if use_detailed_roles:
-            logger.info("Using detailed household position data for role assignment")
-        
-        # Generate individuals exactly matching the marginal counts
-        individual_pool = []
-        
-        for _, row in population_data.iterrows():
-            count = int(row[count_col]) if pd.notna(row[count_col]) else 0
-            if count <= 0:
-                continue
-            
-            age_group = row[age_col]
-            sex_label = row[sex_col]
-            role_label = row[role_col]
-            
-            sex = self._translate_sex(sex_label)
-            
-            for _ in range(count):
-                age = self._sample_age_from_group(age_group)
-                
-                if use_detailed_roles:
-                    # Sample role from census probabilities for this age/sex
-                    hh_role = self._sample_role_for_agent(age, sex)
-                else:
-                    # Fall back to aggregate role translation
-                    hh_role = self._translate_hh_role(role_label)
-                    # Basic age-based child detection for old data
-                    if age < 18 and hh_role != 'cohabiting':
-                        hh_role = 'child'
-                
-                agent = Agent(
-                    agent_id=self.next_agent_id,
-                    age=age,
-                    sex=sex,
-                    hh_role=hh_role
-                )
-                individual_pool.append(agent)
-                self.next_agent_id += 1
+        if use_position_data_directly:
+            logger.info("Using position data DIRECTLY for exact role counts")
+            individual_pool = self._generate_individuals_from_position_data()
+        else:
+            logger.info("Falling back to population data with role sampling")
+            individual_pool = self._generate_individuals_from_population_data(population_data)
         
         logger.info(f"Generated {len(individual_pool)} individuals from marginals")
         
         # Categorize individuals by role
         singles = [a for a in individual_pool if a.hh_role == 'single']
+        single_parents = [a for a in individual_pool if a.hh_role == 'single_parent']
         cohabiting = [a for a in individual_pool if a.hh_role == 'cohabiting']
         children = [a for a in individual_pool if a.hh_role == 'child']
-        other = [a for a in individual_pool if a.hh_role not in ['single', 'cohabiting', 'child']]
+        other = [a for a in individual_pool if a.hh_role not in ['single', 'single_parent', 'cohabiting', 'child']]
         
-        logger.info(f"Pool: {len(singles)} singles, {len(cohabiting)} cohabiting, "
-                   f"{len(children)} children, {len(other)} other")
+        logger.info(f"Pool: {len(singles)} singles, {len(single_parents)} single_parents, "
+                   f"{len(cohabiting)} cohabiting, {len(children)} children, {len(other)} other")
         
         # === Phase 3: Constrained assignment ===
         logger.info("Top-down Phase 3: Constrained assignment to containers")
@@ -496,6 +460,7 @@ class PopulationSynthesizer:
         
         # Shuffle for randomization
         random.shuffle(singles)
+        random.shuffle(single_parents)
         random.shuffle(cohabiting)
         random.shuffle(children)
         random.shuffle(other)
@@ -505,6 +470,12 @@ class PopulationSynthesizer:
         logger.info("Step 3a: Forming couples in multi-person households")
         couples_formed = self._form_couples_topdown(cohabiting, multi_hh)
         logger.info(f"Formed {couples_formed} couples")
+        
+        # Step 3a.5: Place single parents in multi-person households
+        # Single parents MUST be placed before children, so children can join them
+        logger.info("Step 3a.5: Placing single parents in multi-person households")
+        single_parents_placed = self._place_single_parents_topdown(single_parents, multi_hh)
+        logger.info(f"Placed {single_parents_placed} single parents")
         
         # Step 3b: Assign children to households with adults
         logger.info("Step 3b: Assigning children to family households")
@@ -535,6 +506,9 @@ class PopulationSynthesizer:
         
         # Finalize: add all placed agents to self.agents
         self.agents = [a for a in individual_pool if a.household_id is not None]
+        
+        # Validate and fix household compositions
+        self._fix_children_only_households()
         
         # Calculate capacity stats
         total_capacity = sum(h.size for h in self.households)
@@ -586,21 +560,107 @@ class PopulationSynthesizer:
         
         return couples_formed
     
+    def _place_single_parents_topdown(self, single_parents: List[Agent], multi_hh: List[Household]) -> int:
+        """
+        Place single parents in multi-person households.
+        
+        Single parents (Ensamstående förälder) must go to multi-person households
+        because they live with children. They should be placed BEFORE children
+        so that children can then be assigned to their households.
+        
+        Each single parent household should have EXACTLY ONE single parent.
+        Prioritize empty households to ensure proper single-parent family formation.
+        """
+        placed = 0
+        
+        # Sort single parents by age descending (older parents first)
+        single_parents = sorted(single_parents, key=lambda a: -a.age)
+        
+        for parent in single_parents:
+            # Find an EMPTY multi-person household (no members yet)
+            # This ensures each single parent gets their own household
+            best_hh = None
+            for hh in multi_hh:
+                if len(hh.members) > 0:
+                    continue  # Skip households that already have members
+                
+                if not hh.can_fit():
+                    continue
+                
+                # Need at least 2 total capacity (parent + child)
+                if hh.size >= 2:
+                    best_hh = hh
+                    break
+            
+            if best_hh:
+                best_hh.add_member(parent)
+                placed += 1
+        
+        return placed
+    
     def _place_children_topdown(self, children: List[Agent], multi_hh: List[Household]) -> int:
-        """Place children in households that have adults."""
+        """
+        Place children in households that have adults.
+        
+        Prioritizes:
+        1. Single-parent households (ensure single parents get children first)
+        2. Couple households (with suitable parents)
+        """
         min_parent_gap = self.constraints.get('parent_child_age_gap_min', 18)
         
         # Sort children youngest first
         children = sorted(children, key=lambda c: c.age)
         
+        # Separate single-parent households from couple households
+        single_parent_hh = [hh for hh in multi_hh 
+                          if any(m.hh_role == 'single_parent' for m in hh.members)
+                          and sum(1 for m in hh.members if m.hh_role == 'cohabiting') < 2]
+        couple_hh = [hh for hh in multi_hh 
+                    if sum(1 for m in hh.members if m.hh_role == 'cohabiting') >= 2]
+        
         placed = 0
+        
+        # First pass: prioritize single-parent households
         for child in children:
-            # Find a household with capacity and an adult old enough
-            for hh in multi_hh:
+            if child.household_id is not None:
+                continue
+                
+            for hh in single_parent_hh:
                 if not hh.can_fit():
                     continue
                 
                 # Check if there's a suitable parent
+                adults = [m for m in hh.members if m.age >= child.age + min_parent_gap]
+                if adults:
+                    hh.add_member(child)
+                    placed += 1
+                    break
+        
+        # Second pass: fill remaining children into couple households
+        for child in children:
+            if child.household_id is not None:
+                continue
+                
+            for hh in couple_hh:
+                if not hh.can_fit():
+                    continue
+                
+                # Check if there's a suitable parent
+                adults = [m for m in hh.members if m.age >= child.age + min_parent_gap]
+                if adults:
+                    hh.add_member(child)
+                    placed += 1
+                    break
+        
+        # Third pass: any remaining children go to any household with adults
+        for child in children:
+            if child.household_id is not None:
+                continue
+                
+            for hh in multi_hh:
+                if not hh.can_fit():
+                    continue
+                
                 adults = [m for m in hh.members if m.age >= child.age + min_parent_gap]
                 if adults:
                     hh.add_member(child)
@@ -621,6 +681,74 @@ class PopulationSynthesizer:
                     break
         
         return placed
+    
+    def _fix_children_only_households(self) -> None:
+        """
+        Fix households that contain only children (no adults).
+        
+        This is a post-synthesis validation step that corrects any
+        households that ended up with only children. Such households
+        are invalid and would be misclassified as "Övriga hushåll"
+        when they should be part of family structures.
+        
+        Strategy:
+        1. Identify households with only children
+        2. Move children to other households that have adults
+        3. If source household becomes empty, remove it
+        """
+        children_only_hh = []
+        hh_with_adults = []
+        
+        for hh in self.households:
+            if not hh.members:
+                continue
+            has_adult = any(m.age >= 18 for m in hh.members)
+            if has_adult:
+                hh_with_adults.append(hh)
+            else:
+                # All members are children
+                children_only_hh.append(hh)
+        
+        if not children_only_hh:
+            return  # No issues found
+        
+        # Count affected children
+        affected_children = sum(len(hh.members) for hh in children_only_hh)
+        logger.warning(f"Found {len(children_only_hh)} children-only households "
+                      f"({affected_children} children). Redistributing to family households.")
+        
+        # Redistribute children from invalid households to valid ones
+        children_to_move = []
+        for hh in children_only_hh:
+            children_to_move.extend(list(hh.members))
+            # Clear the household
+            for child in list(hh.members):
+                hh.members.remove(child)
+                child.household_id = None
+        
+        # Sort target households by capacity (prefer households with more space)
+        hh_with_adults.sort(key=lambda h: h.size - len(h.members), reverse=True)
+        
+        moved = 0
+        for child in children_to_move:
+            for hh in hh_with_adults:
+                if hh.can_fit():
+                    hh.add_member(child)
+                    moved += 1
+                    break
+            else:
+                # No capacity - force add to a random family household
+                if hh_with_adults:
+                    target = random.choice(hh_with_adults)
+                    target.size += 1
+                    target.add_member(child)
+                    moved += 1
+        
+        # Remove empty households
+        self.households = [hh for hh in self.households if hh.members]
+        
+        logger.info(f"Moved {moved} children to family households. "
+                   f"Remaining households: {len(self.households)}")
     
     def _fill_remaining_slots_topdown(self, remaining: List[Agent], multi_hh: List[Household]) -> int:
         """Fill remaining slots in multi-person households."""
@@ -653,7 +781,11 @@ class PopulationSynthesizer:
         """
         Redistribute unplaced individuals to households.
         
-        First tries to place in households with remaining capacity.
+        IMPORTANT: Places adults before children, and ensures children are
+        only placed in households that have at least one adult. This prevents
+        creating invalid households with only children (which would be 
+        mis-classified as "Övriga hushåll" instead of proper family types).
+        
         For any overflow (due to census data privacy rounding), randomly
         spreads individuals across households to distribute error uniformly.
         
@@ -661,39 +793,75 @@ class PopulationSynthesizer:
         population tables and household tables due to statistical disclosure
         control (privacy protection through rounding/suppression).
         """
-        placed_count = 0
-        still_unplaced = []
+        # Separate children from adults - children need households WITH adults
+        children = [a for a in unplaced if a.hh_role == 'child' or a.age < 18]
+        adults = [a for a in unplaced if a not in children]
         
-        for agent in unplaced:
+        placed_count = 0
+        still_unplaced_adults = []
+        still_unplaced_children = []
+        
+        # Phase 1: Place adults first (they can go anywhere with capacity)
+        for agent in adults:
             placed = False
-            
-            # Try to find any household with remaining capacity
             for hh in all_hh:
                 if hh.can_fit():
                     hh.add_member(agent)
                     placed = True
                     placed_count += 1
                     break
-            
             if not placed:
-                still_unplaced.append(agent)
+                still_unplaced_adults.append(agent)
         
-        # For overflow individuals, randomly spread across households
-        # This distributes the census data error uniformly
+        # Phase 2: Place children ONLY in households that already have adults
+        for child in children:
+            placed = False
+            for hh in all_hh:
+                if not hh.can_fit():
+                    continue
+                # Check if household has at least one adult
+                has_adult = any(m.age >= 18 for m in hh.members)
+                if has_adult:
+                    hh.add_member(child)
+                    placed = True
+                    placed_count += 1
+                    break
+            if not placed:
+                still_unplaced_children.append(child)
+        
+        still_unplaced = still_unplaced_adults + still_unplaced_children
+        
+        # For overflow individuals, spread across households
+        # But maintain the rule: children only go to households with adults
         if still_unplaced:
             logger.info(f"Spreading {len(still_unplaced)} overflow individuals across households "
                        f"(census privacy rounding adjustment)")
+            
+            # Separate adults and children for overflow handling too
+            overflow_adults = [a for a in still_unplaced if a not in children]
+            overflow_children = [a for a in still_unplaced if a in children]
             
             # Shuffle households to spread uniformly
             shuffled_hh = list(all_hh)
             random.shuffle(shuffled_hh)
             
-            for i, agent in enumerate(still_unplaced):
-                # Pick a household (cycle through if needed)
+            # Place overflow adults in any household
+            for i, agent in enumerate(overflow_adults):
                 hh = shuffled_hh[i % len(shuffled_hh)]
-                # Force add (temporarily extend capacity by 1)
                 hh.size += 1
                 hh.add_member(agent)
+                placed_count += 1
+            
+            # Place overflow children only in households with adults
+            hh_with_adults = [hh for hh in shuffled_hh if any(m.age >= 18 for m in hh.members)]
+            if not hh_with_adults:
+                # Fallback: if no households have adults yet, use any
+                hh_with_adults = shuffled_hh
+                
+            for i, child in enumerate(overflow_children):
+                hh = hh_with_adults[i % len(hh_with_adults)]
+                hh.size += 1
+                hh.add_member(child)
                 placed_count += 1
             
             logger.info(f"Placed all {placed_count} overflow individuals")
@@ -1091,12 +1259,18 @@ class PopulationSynthesizer:
 
     def _assign_income(self, income_data: pd.DataFrame) -> None:
         """
-        Assign income to agents based on neighborhood income standard distribution.
+        Assign income to households and adult members based on income standard distribution.
         
-        The income data from SCB uses "Inkomststandard" categories:
+        The income data from SCB uses "Inkomststandard" categories which apply to
+        households, not individuals. Categories are:
         - Low income ("har låg inkomststandard")
         - Not low income ("inte har låg inkomststandard")
-
+        - Not part of year-round household ("Ingår ej i helårshushåll")
+        
+        Income is assigned to:
+        - Adults (age >= 18): Individual income based on household's income standard
+        - Children (age < 18): No individual income (income = 0)
+        
         Args:
             income_data: DataFrame with income standard distribution
         """
@@ -1105,17 +1279,30 @@ class PopulationSynthesizer:
         
         logger.info(f"Low income probability from marginals: {low_income_prob:.1%}")
 
-        for agent in self.agents:
-            # Assign income standard based on marginal probability
+        # Assign income at the household level, then distribute to adult members
+        for household in self.households:
+            # Determine household's income standard
             is_low_income = random.random() < low_income_prob
+            income_standard = 'low' if is_low_income else 'not_low'
             
-            if is_low_income:
-                agent.income_decile = random.randint(1, 2)  # Low income = decile 1-2
-            else:
-                agent.income_decile = random.randint(3, 10)  # Not low income = decile 3-10
+            # Get adults in this household
+            adults = [m for m in household.members if m.age >= 18]
+            children = [m for m in household.members if m.age < 18]
             
-            agent.income = self._estimate_income_from_decile(agent.income_decile)
-            agent.income_standard = 'low' if is_low_income else 'not_low'
+            # Assign income to adults only
+            for adult in adults:
+                if is_low_income:
+                    adult.income_decile = random.randint(1, 2)
+                else:
+                    adult.income_decile = random.randint(3, 10)
+                adult.income = self._estimate_income_from_decile(adult.income_decile)
+                adult.income_standard = income_standard
+            
+            # Children get no individual income
+            for child in children:
+                child.income = 0
+                child.income_decile = None
+                child.income_standard = income_standard  # Inherit household's standard
 
     def _calculate_low_income_probability(self, income_data: pd.DataFrame) -> float:
         """Calculate the probability of low income from income standard data."""
@@ -1205,11 +1392,12 @@ class PopulationSynthesizer:
         return dist
 
     def _validate_synthesis(self) -> None:
-        """Validate the synthesized population."""
-        # Check all households have members
+        """Validate and clean up the synthesized population."""
+        # Remove empty households (shouldn't happen but clean up if it does)
         empty_hhs = [h for h in self.households if len(h.members) == 0]
         if empty_hhs:
-            logger.warning(f"{len(empty_hhs)} empty households")
+            logger.warning(f"Removing {len(empty_hhs)} empty households")
+            self.households = [h for h in self.households if len(h.members) > 0]
 
         # Check all agents have households
         orphaned = [a for a in self.agents if a.household_id is None]
@@ -1271,10 +1459,17 @@ class PopulationSynthesizer:
         Handles positions from 60_FolkmHHStallning_PRI.px table:
         - Person i gift par/registrerat partnerskap -> cohabiting
         - Personer i samboförhållande -> cohabiting
-        - Ensamstående förälder -> single
+        - Ensamstående förälder -> single_parent (must live with children)
         - Barn -> child
-        - Ensamboende -> single
+        - Ensamboende -> single (must live alone in 1-person HH)
         - Ej ensamboende personer, övriga -> other
+        
+        The distinction between 'single' and 'single_parent' is critical:
+        - 'single' (Ensamboende) MUST go to 1-person households
+        - 'single_parent' (Ensamstående förälder) MUST go to multi-person HH with children
+        
+        IMPORTANT: Check 'övrig' BEFORE 'ensamboende' because 
+        "Ej ensamboende personer, övriga" contains both substrings!
         """
         if pd.isna(position_str):
             return 'single'
@@ -1282,22 +1477,135 @@ class PopulationSynthesizer:
         pos_lower = str(position_str).lower()
         
         # Order matters - check more specific patterns first
+        # CRITICAL: Check 'övrig' before 'ensamboende' because
+        # "Ej ensamboende personer, övriga" matches BOTH!
         if 'barn' == pos_lower.strip():
             return 'child'
+        elif 'övrig' in pos_lower:
+            return 'other'  # Must check BEFORE ensamboende!
         elif 'ensamboende' in pos_lower:
-            return 'single'
+            return 'single'  # Lives alone
         elif 'ensamstående förälder' in pos_lower:
-            return 'single'
+            return 'single_parent'  # Lives with children - DIFFERENT from single!
         elif 'gift par' in pos_lower or 'partnerskap' in pos_lower:
             return 'cohabiting'
         elif 'sambo' in pos_lower:
             return 'cohabiting'
-        elif 'övrig' in pos_lower:
-            return 'other'
         elif 'uppgift saknas' in pos_lower:
             return 'unknown'
         
         return 'single'
+    
+    def _generate_individuals_from_position_data(self) -> List[Agent]:
+        """
+        Generate individuals directly from position data for EXACT role counts.
+        
+        This is more accurate than sampling from probabilities because it
+        guarantees the exact number of singles, cohabiting, children, and
+        other roles match the census data.
+        
+        Returns:
+            List of Agent objects with exact role distribution from census.
+        """
+        position_data = self._household_position_data
+        
+        age_col = 'Ålder' if 'Ålder' in position_data.columns else 'age_group'
+        sex_col = 'Kön' if 'Kön' in position_data.columns else 'sex'
+        pos_col = 'Hushållsställning' if 'Hushållsställning' in position_data.columns else 'hh_position'
+        count_col = 'Antal' if 'Antal' in position_data.columns else 'count'
+        
+        if count_col not in position_data.columns:
+            for col in position_data.columns:
+                if position_data[col].dtype in ['int64', 'float64']:
+                    count_col = col
+                    break
+        
+        individual_pool = []
+        role_counts = {}  # For logging
+        
+        for _, row in position_data.iterrows():
+            count = int(row[count_col]) if pd.notna(row[count_col]) else 0
+            if count <= 0:
+                continue
+            
+            age_group = row[age_col]
+            sex_label = row[sex_col]
+            position = row[pos_col]
+            
+            sex = self._translate_sex(sex_label)
+            hh_role = self._translate_hh_position(position)
+            
+            if hh_role == 'unknown':
+                continue  # Skip unknown positions
+            
+            role_counts[hh_role] = role_counts.get(hh_role, 0) + count
+            
+            for _ in range(count):
+                age = self._sample_age_from_group(age_group)
+                
+                agent = Agent(
+                    agent_id=self.next_agent_id,
+                    age=age,
+                    sex=sex,
+                    hh_role=hh_role
+                )
+                individual_pool.append(agent)
+                self.next_agent_id += 1
+        
+        logger.info(f"Exact role counts from position data: {role_counts}")
+        return individual_pool
+    
+    def _generate_individuals_from_population_data(self, population_data: pd.DataFrame) -> List[Agent]:
+        """
+        Generate individuals from population data with role sampling (fallback).
+        
+        Used when detailed position data is not available.
+        
+        Args:
+            population_data: DataFrame with age/sex/role counts
+            
+        Returns:
+            List of Agent objects
+        """
+        age_col = 'Ålder' if 'Ålder' in population_data.columns else 'age_group'
+        sex_col = 'Kön' if 'Kön' in population_data.columns else 'sex'
+        role_col = 'Hushållstyp' if 'Hushållstyp' in population_data.columns else 'hh_role'
+        count_col = 'Antal' if 'Antal' in population_data.columns else population_data.columns[-1]
+        
+        individual_pool = []
+        
+        for _, row in population_data.iterrows():
+            count = int(row[count_col]) if pd.notna(row[count_col]) else 0
+            if count <= 0:
+                continue
+            
+            age_group = row[age_col]
+            sex_label = row[sex_col]
+            role_label = row[role_col]
+            
+            sex = self._translate_sex(sex_label)
+            
+            for _ in range(count):
+                age = self._sample_age_from_group(age_group)
+                
+                # Use probability sampling if available
+                if hasattr(self, '_role_probs') and self._role_probs:
+                    hh_role = self._sample_role_for_agent(age, sex)
+                else:
+                    hh_role = self._translate_hh_role(role_label)
+                    if age < 18 and hh_role != 'cohabiting':
+                        hh_role = 'child'
+                
+                agent = Agent(
+                    agent_id=self.next_agent_id,
+                    age=age,
+                    sex=sex,
+                    hh_role=hh_role
+                )
+                individual_pool.append(agent)
+                self.next_agent_id += 1
+        
+        return individual_pool
     
     def _build_role_probability_table(self, position_data: pd.DataFrame) -> None:
         """

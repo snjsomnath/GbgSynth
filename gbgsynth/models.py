@@ -389,8 +389,15 @@ class Household:
         self.dwelling_id = dwelling.dwelling_id
         self.floor_area = dwelling.floor_area
         self.building_id = dwelling.building_id
-        self.assigned_hustyp = dwelling.house_type_sv
-        self.house_type = dwelling.house_type
+        # Only set hustyp from dwelling if not already assigned by synthesizer
+        # (Census assigns Specialbostad/Uppgift saknas which dwelling table doesn't have)
+        if self.assigned_hustyp is None:
+            self.assigned_hustyp = dwelling.house_type_sv
+            self.house_type = dwelling.house_type
+        # But always update house_type if dwelling has different physical type
+        elif dwelling.house_type_sv in ('Småhus', 'Flerbostadshus'):
+            # Keep census category for validation but note actual building type
+            self.house_type = dwelling.house_type
         
         # Update dwelling's occupant reference
         dwelling.household_id = self.household_id

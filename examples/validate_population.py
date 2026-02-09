@@ -7,7 +7,8 @@ were NOT used in the synthesis fitting process.
 """
 
 import logging
-from gbgsynth import GbgSynth, Validator, validation
+from gbgsynth import GbgSynth
+from gbgsynth.validation import Validator
 
 logging.basicConfig(level=logging.WARNING, format='%(message)s')
 

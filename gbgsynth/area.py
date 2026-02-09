@@ -174,6 +174,12 @@ class GbgArea:
         buildings = self._load_building_footprints()
         if buildings is not None and len(buildings) > 0:
             self._link_dwellings_to_buildings(buildings)
+        else:
+            logger.warning(
+                f"⚠️  No building footprints available for {self.area_name}. "
+                "Dwellings will NOT be geo-located to buildings. "
+                "Run 'generate_neighbourhood_heights()' from data_utils to download building data."
+            )
         
         # Match households to dwellings
         self._match_households_to_dwellings()
@@ -184,6 +190,11 @@ class GbgArea:
         logger.info(f"Allocated {allocated}/{len(self.households)} households to dwellings")
         if linked > 0:
             logger.info(f"Linked {linked}/{len(self.dwellings)} dwellings to buildings")
+        elif len(self.dwellings) > 0:
+            logger.warning(
+                f"⚠️  0/{len(self.dwellings)} dwellings linked to buildings for {self.area_name}. "
+                "Synthetic population lacks realistic spatial distribution!"
+            )
 
     def _load_building_footprints(self) -> Optional['pd.DataFrame']:
         """
@@ -193,6 +204,7 @@ class GbgArea:
             GeoDataFrame with building footprints or None if not available
         """
         import os
+        import unicodedata
         
         try:
             import geopandas as gpd
@@ -202,15 +214,45 @@ class GbgArea:
         
         # Build path to footprint file
         data_dir = os.path.dirname(os.path.abspath(__file__))
+        footprints_dir = os.path.join(data_dir, 'data', 'footprints')
         
         # Try to find matching footprint file by area name
         # Area names like "107 Haga" -> "Haga_heights.gpkg"
         area_short_name = self.area_name.split(' ', 1)[-1] if ' ' in self.area_name else self.area_name
+        safe_name = area_short_name.replace(' ', '_').replace('/', '_')
         
-        footprint_path = os.path.join(data_dir, 'data', 'footprints', f'{area_short_name}_heights.gpkg')
+        # Try both NFC and NFD normalized versions (macOS uses NFD for filenames)
+        expected_file = f'{safe_name}_heights.gpkg'
+        footprint_path = os.path.join(footprints_dir, expected_file)
         
         if not os.path.exists(footprint_path):
-            logger.debug(f"No footprint file found at {footprint_path}")
+            # Try NFD normalization (macOS filesystem)
+            nfd_name = unicodedata.normalize('NFD', safe_name)
+            nfd_file = f'{nfd_name}_heights.gpkg'
+            nfd_path = os.path.join(footprints_dir, nfd_file)
+            if os.path.exists(nfd_path):
+                footprint_path = nfd_path
+            else:
+                # Try NFC normalization
+                nfc_name = unicodedata.normalize('NFC', safe_name)
+                nfc_file = f'{nfc_name}_heights.gpkg'
+                nfc_path = os.path.join(footprints_dir, nfc_file)
+                if os.path.exists(nfc_path):
+                    footprint_path = nfc_path
+                else:
+                    # Search directory for case-insensitive match
+                    if os.path.exists(footprints_dir):
+                        for f in os.listdir(footprints_dir):
+                            f_normalized = unicodedata.normalize('NFC', f)
+                            if f_normalized.lower() == expected_file.lower():
+                                footprint_path = os.path.join(footprints_dir, f)
+                                break
+        
+        if not os.path.exists(footprint_path):
+            logger.warning(
+                f"Building heights file not found: {area_short_name}_heights.gpkg. "
+                "Synthetic population will lack spatial building allocation."
+            )
             return None
         
         try:
@@ -297,7 +339,10 @@ class GbgArea:
                 residential['net_to_gross'] = MFH_NET_TO_GROSS
         else:
             # Fallback: filter by size only (legacy behavior)
-            logger.warning("No objekttyp column - filtering by size only")
+            logger.warning(
+                "⚠️  No 'objekttyp' column in building data - cannot distinguish residential buildings. "
+                "Filtering by size only (less accurate). Regenerate height files to include building types."
+            )
             residential = buildings.copy()
             residential['net_to_gross'] = MFH_NET_TO_GROSS
         
@@ -308,7 +353,10 @@ class GbgArea:
         residential = residential[residential['residential_area'] >= MIN_BUILDING_AREA].copy()
         
         if len(residential) == 0:
-            logger.warning("No residential buildings found in footprints")
+            logger.warning(
+                f"⚠️  No residential buildings found for {self.area_name}. "
+                "Dwellings cannot be allocated to buildings. Check if building data has 'objekttyp' column."
+            )
             return
         
         total_building_area = residential['residential_area'].sum()
@@ -627,14 +675,31 @@ class GbgArea:
             })
 
     def _fetch_income_data(self) -> Optional[pd.DataFrame]:
-        """Fetch income distribution data."""
+        """Fetch income distribution data.
+        
+        Note: The income table may use different area naming than population tables.
+        We try the standard name first, then discover the correct name from metadata if needed.
+        This makes the code resilient to API naming inconsistencies.
+        """
         table_path = self.config.get_table_id('INCOME')
         
+        # Try with standard area name first
         try:
             df = self.client.query_all_variables(table_path, self.area_api_value, self.year)
             logger.info(f"Fetched {len(df)} income records")
             return df
         except Exception as e:
+            # If 400 error, the area name might differ in this table - try to discover it
+            if '400' in str(e):
+                discovered_name = self._discover_income_area_name(table_path)
+                if discovered_name and discovered_name != self.area_api_value:
+                    try:
+                        df = self.client.query_all_variables(table_path, discovered_name, self.year)
+                        logger.info(f"Fetched {len(df)} income records (using discovered name '{discovered_name}')")
+                        return df
+                    except:
+                        pass
+            
             # Try previous years if current year not available
             for fallback_year in [self.year - 1, self.year - 2, 2023, 2022]:
                 try:
@@ -645,6 +710,26 @@ class GbgArea:
                     continue
             logger.warning(f"Income data not available: {e}")
             return None
+    
+    def _discover_income_area_name(self, table_path: str) -> Optional[str]:
+        """Discover the correct area name for the income table by querying metadata.
+        
+        Different API tables may use slightly different area name spellings.
+        This method searches the table's available area values to find one
+        matching our area code.
+        """
+        try:
+            metadata = self.client.fetch_metadata(table_path)
+            for var in metadata.get('variables', []):
+                if 'område' in var.get('text', '').lower():
+                    values = var.get('values', [])
+                    # Find value starting with our area code
+                    for v in values:
+                        if v.startswith(self.area_code + ' '):
+                            return v
+        except Exception as e:
+            logger.debug(f"Could not discover income area name: {e}")
+        return None
 
     def _fetch_household_position_data(self) -> Optional[pd.DataFrame]:
         """
@@ -993,16 +1078,32 @@ class GbgArea:
         # 5. Calculate overall fit statistics
         all_actual = []
         all_synth = []
+        all_pct_errors = []  # Percentage errors for each category
         for cat, data in comparisons.items():
             if data and 'comparison' in data:
                 for row in data['comparison']:
                     all_actual.append(row['actual'])
                     all_synth.append(row['synth'])
+                    # Track percentage error per category (avoid division by zero)
+                    if row['actual'] > 0:
+                        pct_err = abs(row['synth'] - row['actual']) / row['actual'] * 100
+                        all_pct_errors.append(pct_err)
         
         if all_actual:
             actual_arr = np.array(all_actual)
             synth_arr = np.array(all_synth)
             diff_arr = synth_arr - actual_arr
+            
+            # Calculate Mean Absolute Percentage Error (MAPE) - more intuitive than correlation
+            # This treats all categories equally regardless of size
+            mape = float(np.mean(all_pct_errors)) if all_pct_errors else 0.0
+            
+            # Also calculate weighted MAPE (weighted by census count)
+            weighted_pct_errors = []
+            for actual, synth in zip(all_actual, all_synth):
+                if actual > 0:
+                    weighted_pct_errors.append(abs(synth - actual) / actual * 100 * actual)
+            wmape = sum(weighted_pct_errors) / sum(all_actual) if sum(all_actual) > 0 else 0.0
             
             comparisons['overall'] = {
                 'total_actual': int(sum(all_actual)),
@@ -1010,7 +1111,11 @@ class GbgArea:
                 'rmse': float(np.sqrt(np.mean(diff_arr ** 2))),
                 'mae': float(np.mean(np.abs(diff_arr))),
                 'max_error': int(np.max(np.abs(diff_arr))),
-                'correlation': float(np.corrcoef(actual_arr, synth_arr)[0, 1]) if len(actual_arr) > 1 else 1.0
+                'correlation': float(np.corrcoef(actual_arr, synth_arr)[0, 1]) if len(actual_arr) > 1 else 1.0,
+                'mape': mape,  # Mean Absolute Percentage Error (unweighted - all categories equal)
+                'wmape': wmape,  # Weighted MAPE (large categories count more)
+                'n_categories': len(all_actual),
+                'max_pct_error': max(all_pct_errors) if all_pct_errors else 0.0
             }
         
         if print_report:
@@ -1054,20 +1159,20 @@ class GbgArea:
         logger.info(f"  Total Cars:             {stats['total_cars']:,}")
         logger.info("")
         
-        # Log IPF statistics if available
-        if self.ipf_stats:
-            logger.info("IPF Statistics:")
-            logger.info(f"  Method: {self.ipf_stats.get('method', 'unknown')}")
-            if 'rmse' in self.ipf_stats:
-                logger.info(f"  RMSE: {self.ipf_stats['rmse']:.4f}")
-            if 'converged' in self.ipf_stats:
-                logger.info(f"  Converged: {self.ipf_stats['converged']}")
-            if 'iterations' in self.ipf_stats:
-                logger.info(f"  Iterations: {self.ipf_stats['iterations']}")
-            if 'households_created' in self.ipf_stats:
-                logger.info(f"  Households: {self.ipf_stats['households_created']}")
-            if 'individuals_placed' in self.ipf_stats:
-                logger.info(f"  Individuals Placed: {self.ipf_stats['individuals_placed']}")
+        # Log synthesis statistics if available
+        if self.stats:
+            logger.info("Synthesis Statistics:")
+            logger.info(f"  Method: {self.stats.get('method', 'unknown')}")
+            if 'rmse' in self.stats:
+                logger.info(f"  RMSE: {self.stats['rmse']:.4f}")
+            if 'converged' in self.stats:
+                logger.info(f"  Converged: {self.stats['converged']}")
+            if 'iterations' in self.stats:
+                logger.info(f"  Iterations: {self.stats['iterations']}")
+            if 'households_created' in self.stats:
+                logger.info(f"  Households: {self.stats['households_created']}")
+            if 'individuals_placed' in self.stats:
+                logger.info(f"  Individuals Placed: {self.stats['individuals_placed']}")
             logger.info("")
         
         if include_marginal_comparison:
@@ -1270,43 +1375,62 @@ class GbgArea:
         
         actual = pop_data.groupby(role_col)[count_col].sum().to_dict()
         
-        # Map synth roles to Swedish labels
-        role_mapping = {
-            'single': ['Ensamstående', 'ensamstående', 'Ensam'],
-            'cohabiting': ['Sammanboende', 'sammanboende', 'Sambo'],
-            'child': ['Barn', 'barn', 'Övriga hushåll']  # Children often in "Övriga hushåll"
-        }
+        # The census "Hushållstyp" describes the HOUSEHOLD TYPE the person lives in:
+        # - Ensamstående: person living alone or single parent
+        # - Sammanboende: person in couple household (includes adults AND children in those households)
+        # - Övriga hushåll: other types (group housing, multigenerational, etc.)
+        # 
+        # This is different from individual role (single/cohabiting/child).
+        # We need to map based on household composition, not individual role.
         
-        # Count synth roles - need to properly map to actual categories
         synth = {}
         
-        # First pass: map directly
         for ind in self.individuals:
-            role = ind.hh_role
-            matched = False
+            # Find the household this person belongs to
+            hh = None
+            for h in self.households:
+                if ind in h.members:
+                    hh = h
+                    break
             
-            # Direct role matching
+            if hh is None:
+                # Shouldn't happen, but handle gracefully
+                synth['Uppgift saknas'] = synth.get('Uppgift saknas', 0) + 1
+                continue
+            
+            # Determine household type based on composition
+            # Note: 'single_parent' is a distinct role for census matching
+            has_couple = sum(1 for m in hh.members if m.hh_role == 'cohabiting') >= 2
+            is_single_person = len(hh.members) == 1
+            # Check for single parent: either has role 'single_parent', or is the only adult with children
+            has_single_parent = any(m.hh_role == 'single_parent' for m in hh.members)
+            is_single_parent_hh = has_single_parent or (
+                len([m for m in hh.members if m.hh_role in ('single', 'single_parent', 'cohabiting')]) == 1 and
+                any(m.hh_role == 'child' for m in hh.members)
+            )
+            
+            # Assign to census category
+            hh_type = None
             for actual_cat in actual.keys():
                 actual_lower = str(actual_cat).lower()
                 
-                if role == 'single' and 'ensam' in actual_lower:
-                    synth[actual_cat] = synth.get(actual_cat, 0) + 1
-                    matched = True
+                if has_couple and 'samman' in actual_lower:
+                    # Couple households (all members count as "Sammanboende")
+                    hh_type = actual_cat
                     break
-                elif role == 'cohabiting' and 'samman' in actual_lower:
-                    synth[actual_cat] = synth.get(actual_cat, 0) + 1
-                    matched = True
+                elif (is_single_person or is_single_parent_hh) and 'ensam' in actual_lower:
+                    # Single-person or single-parent households
+                    hh_type = actual_cat
                     break
-                elif role == 'child':
-                    # Children go to "Övriga hushåll" if it exists, otherwise track separately
-                    if 'övriga' in actual_lower:
-                        synth[actual_cat] = synth.get(actual_cat, 0) + 1
-                        matched = True
-                        break
+                elif 'övriga' in actual_lower:
+                    # Default to "Övriga hushåll" for other structures
+                    hh_type = actual_cat
+                    # Don't break - prefer more specific matches
             
-            if not matched:
-                # Keep track of unmatched roles
-                synth[role] = synth.get(role, 0) + 1
+            if hh_type:
+                synth[hh_type] = synth.get(hh_type, 0) + 1
+            else:
+                synth['Uppgift saknas'] = synth.get('Uppgift saknas', 0) + 1
         
         comparison = []
         for category in set(list(actual.keys()) + list(synth.keys())):
@@ -1452,10 +1576,16 @@ class GbgArea:
             output("=" * 70)
             output(f"  Total Population (Actual):  {ov['total_actual']:,}")
             output(f"  Total Population (Synth):   {ov['total_synth']:,}")
+            output(f"  Categories Compared:        {ov.get('n_categories', 'N/A')}")
             output(f"  Root Mean Square Error:     {ov['rmse']:.2f}")
             output(f"  Mean Absolute Error:        {ov['mae']:.2f}")
             output(f"  Max Category Error:         {ov['max_error']}")
-            output(f"  Correlation:                {ov['correlation']:.4f}")
+            output(f"  Pearson Correlation:        {ov['correlation']:.4f}")
+            output("")
+            output("  Percentage Error Metrics:")
+            output(f"    MAPE (unweighted):        {ov.get('mape', 0):.1f}%  ← treats all categories equally")
+            output(f"    Weighted MAPE:            {ov.get('wmape', 0):.1f}%  ← weighted by category size")
+            output(f"    Max Category Error:       {ov.get('max_pct_error', 0):.1f}%")
         
         output("=" * 70 + "\n")
     

@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from gbgsynth.area import GbgArea
     
 from gbgsynth.api_client import PxWebClient
+from gbgsynth.sanity_checks import run_all_checks, SanityCheckResult
 
 logger = logging.getLogger(__name__)
 
@@ -173,6 +174,14 @@ class ValidationReport:
     year: int
     results: Dict[str, ValidationResult]
     overall_score: float  # 0-100
+    sanity_result: Optional[Any] = None  # SanityCheckResult
+    
+    @property
+    def is_valid(self) -> bool:
+        """Returns True if sanity checks pass (no critical violations)."""
+        if self.sanity_result is None:
+            return True
+        return self.sanity_result.is_valid
     
     def summary(self) -> str:
         """Return a text summary of validation results."""
@@ -182,6 +191,14 @@ class ValidationReport:
             f"Overall Score: {self.overall_score:.1f}/100",
             "",
         ]
+        
+        # Sanity check summary
+        if self.sanity_result:
+            if self.sanity_result.is_valid:
+                lines.append(f"Sanity Check: ✓ PASS ({self.sanity_result.warning_count} warnings)")
+            else:
+                lines.append(f"Sanity Check: ✗ FAIL ({self.sanity_result.critical_count} critical issues)")
+            lines.append("")
         
         for name, result in self.results.items():
             status = "✓ PASS" if result.passed else "✗ FAIL"
@@ -666,6 +683,7 @@ class Validator:
         1. Overcrowding rate (derived metric)
         2. Children per household (cross-tabulation)
         3. Household position by age/sex (joint distribution)
+        4. Sanity checks (no unrealistic households)
         
         Returns:
             ValidationReport with all results
@@ -700,7 +718,7 @@ class Validator:
             print(f"        ⚠ ERROR: {e}")
         
         # 3. Household position by age/sex
-        print("  [3/3] Validating household position (age×sex×role)...")
+        print("  [3/4] Validating household position (age×sex×role)...")
         try:
             result = self.validate_household_position()
             if result:
@@ -713,12 +731,34 @@ class Validator:
             logger.warning(f"Household position validation failed: {e}")
             print(f"        ⚠ ERROR: {e}")
         
+        # 4. Sanity checks (no unrealistic households)
+        print("  [4/4] Running sanity checks...")
+        try:
+            sanity_result = run_all_checks(self.area.households, self.area.individuals)
+            if sanity_result.is_valid:
+                print(f"        ✓ PASS ({sanity_result.warning_count} warnings)")
+            else:
+                print(f"        ✗ FAIL ({sanity_result.critical_count} critical issues)")
+                for v in sanity_result.violations[:3]:
+                    if v.severity == 'critical':
+                        print(f"          - {v.description}")
+        except Exception as e:
+            logger.warning(f"Sanity check failed: {e}")
+            sanity_result = None
+            print(f"        ⚠ ERROR: {e}")
+        
         print("-" * 50)
         
         # Calculate overall score
         passed = sum(1 for r in results.values() if r and r.passed)
         total = len([r for r in results.values() if r is not None])
-        score = (passed / total * 100) if total > 0 else 100.0
+        
+        # Sanity check must pass for full score
+        if sanity_result and not sanity_result.is_valid:
+            score = 0.0  # Critical sanity issues = 0 score
+            print(f"⚠️  CRITICAL: Population has unrealistic households - not suitable for modeling")
+        else:
+            score = (passed / total * 100) if total > 0 else 100.0
         
         print(f"Overall: {passed}/{total} validations passed ({score:.0f}%)")
         
@@ -727,7 +767,8 @@ class Validator:
             area_name=self.area.area_name,
             year=self.area.year,
             results=results,
-            overall_score=score
+            overall_score=score,
+            sanity_result=sanity_result
         )
 
 

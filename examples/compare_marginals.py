@@ -8,10 +8,10 @@ logging.basicConfig(level=logging.INFO, format='%(message)s')
 
 
 def main():
-    synth = GbgSynth(year=2024)
+    synth = GbgSynth(year=2023)
     
-    # One-liner synthesis with IPF
-    haga = synth.synthesize("Haga", use_ipf=True)
+    # One-liner synthesis
+    haga = synth.synthesize("Haga")
     
     # Log all statistics including marginal comparison
     haga.log_statistics()
