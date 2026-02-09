@@ -457,6 +457,17 @@ class PopulationSynthesizer:
         sex_col = 'Kön' if 'Kön' in population_data.columns else 'sex'
         role_col = 'Hushållstyp' if 'Hushållstyp' in population_data.columns else 'hh_role'
         
+        # Check if we have detailed position data for role assignment
+        use_detailed_roles = (
+            hasattr(self, '_household_position_data') and 
+            self._household_position_data is not None and
+            hasattr(self, '_role_probs') and 
+            bool(self._role_probs)
+        )
+        
+        if use_detailed_roles:
+            logger.info("Using detailed household position data for role assignment")
+        
         # Generate individuals exactly matching the marginal counts
         individual_pool = []
         
@@ -470,10 +481,20 @@ class PopulationSynthesizer:
             role_label = row[role_col]
             
             sex = self._translate_sex(sex_label)
-            hh_role = self._translate_hh_role(role_label)
             
             for _ in range(count):
                 age = self._sample_age_from_group(age_group)
+                
+                if use_detailed_roles:
+                    # Sample role from census probabilities for this age/sex
+                    hh_role = self._sample_role_for_agent(age, sex)
+                else:
+                    # Fall back to aggregate role translation
+                    hh_role = self._translate_hh_role(role_label)
+                    # Basic age-based child detection for old data
+                    if age < 18 and hh_role != 'cohabiting':
+                        hh_role = 'child'
+                
                 agent = Agent(
                     agent_id=self.next_agent_id,
                     age=age,
@@ -574,7 +595,7 @@ class PopulationSynthesizer:
         couples_formed = 0
         
         for hh in multi_hh:
-            if not hh.has_capacity(2):
+            if not hh.can_fit(2):
                 continue
             
             # Find compatible pair
@@ -607,7 +628,7 @@ class PopulationSynthesizer:
         for child in children:
             # Find a household with capacity and an adult old enough
             for hh in multi_hh:
-                if not hh.has_capacity():
+                if not hh.can_fit():
                     continue
                 
                 # Check if there's a suitable parent
@@ -625,7 +646,7 @@ class PopulationSynthesizer:
         
         for agent in other:
             for hh in multi_hh:
-                if hh.has_capacity():
+                if hh.can_fit():
                     hh.add_member(agent)
                     placed += 1
                     break
@@ -638,7 +659,7 @@ class PopulationSynthesizer:
         
         for agent in remaining:
             for hh in multi_hh:
-                if hh.has_capacity():
+                if hh.can_fit():
                     hh.add_member(agent)
                     placed += 1
                     break
@@ -652,7 +673,7 @@ class PopulationSynthesizer:
         for hh in single_hh:
             if not singles:
                 break
-            if hh.has_capacity():
+            if hh.can_fit():
                 agent = singles.pop()
                 hh.add_member(agent)
                 placed += 1
@@ -661,24 +682,52 @@ class PopulationSynthesizer:
     
     def _redistribute_unplaced_topdown(self, unplaced: List[Agent], all_hh: List[Household]) -> None:
         """
-        Redistribute unplaced individuals to any household with capacity.
+        Redistribute unplaced individuals to households.
         
-        This is a last resort - ideally we've sized everything correctly.
+        First tries to place in households with remaining capacity.
+        For any overflow (due to census data privacy rounding), randomly
+        spreads individuals across households to distribute error uniformly.
+        
+        Note: Census data often has small discrepancies (~1-2%) between
+        population tables and household tables due to statistical disclosure
+        control (privacy protection through rounding/suppression).
         """
+        placed_count = 0
+        still_unplaced = []
+        
         for agent in unplaced:
             placed = False
             
             # Try to find any household with remaining capacity
             for hh in all_hh:
-                if hh.has_capacity():
+                if hh.can_fit():
                     hh.add_member(agent)
                     placed = True
+                    placed_count += 1
                     break
             
             if not placed:
-                # Log but don't create new households - this maintains exact HH count
-                logger.warning(f"Could not place agent {agent.agent_id} (age={agent.age}, "
-                             f"role={agent.hh_role}) - no capacity available")
+                still_unplaced.append(agent)
+        
+        # For overflow individuals, randomly spread across households
+        # This distributes the census data error uniformly
+        if still_unplaced:
+            logger.info(f"Spreading {len(still_unplaced)} overflow individuals across households "
+                       f"(census privacy rounding adjustment)")
+            
+            # Shuffle households to spread uniformly
+            shuffled_hh = list(all_hh)
+            random.shuffle(shuffled_hh)
+            
+            for i, agent in enumerate(still_unplaced):
+                # Pick a household (cycle through if needed)
+                hh = shuffled_hh[i % len(shuffled_hh)]
+                # Force add (temporarily extend capacity by 1)
+                hh.size += 1
+                hh.add_member(agent)
+                placed_count += 1
+            
+            logger.info(f"Placed all {placed_count} overflow individuals")
 
     def _match_individuals_to_households_ipf(self, pool: List[Agent]) -> None:
         """
@@ -724,7 +773,7 @@ class PopulationSynthesizer:
         females = [a for a in adults_cohabiting if a.sex == 'female']
         
         for hh in multi_hhs:
-            if not hh.has_capacity(2):
+            if not hh.can_fit(2):
                 continue
             
             # Find compatible pair
@@ -753,7 +802,7 @@ class PopulationSynthesizer:
         children = sorted(children, key=lambda c: c.age)
         
         # Sort households by remaining capacity descending
-        multi_hhs_with_adults = [hh for hh in multi_hhs if len(hh.members) > 0 and hh.has_capacity()]
+        multi_hhs_with_adults = [hh for hh in multi_hhs if len(hh.members) > 0 and hh.can_fit()]
         multi_hhs_with_adults = sorted(multi_hhs_with_adults, 
                                        key=lambda h: h.size - len(h.members), reverse=True)
         
@@ -762,11 +811,11 @@ class PopulationSynthesizer:
                 continue
             
             for hh in multi_hhs_with_adults:
-                if not hh.has_capacity():
+                if not hh.can_fit():
                     continue
                 
                 # Check for suitable parent
-                head = hh.get_head()
+                head = hh.head
                 if head and (head.age - child.age) >= min_parent_gap:
                     hh.add_member(child)
                     children_assigned += 1
@@ -780,10 +829,10 @@ class PopulationSynthesizer:
         cohab_added = 0
         
         for hh in multi_hhs:
-            if not hh.has_capacity():
+            if not hh.can_fit():
                 continue
             for adult in remaining_cohab:
-                if adult.household_id is None and hh.has_capacity():
+                if adult.household_id is None and hh.can_fit():
                     hh.add_member(adult)
                     cohab_added += 1
         
@@ -813,7 +862,7 @@ class PopulationSynthesizer:
         
         for agent in remaining:
             for hh in self.households:
-                if hh.has_capacity():
+                if hh.can_fit():
                     hh.add_member(agent)
                     redistributed += 1
                     break
@@ -971,7 +1020,7 @@ class PopulationSynthesizer:
 
         # Match opposite-sex pairs
         for hh in households:
-            if hh.has_capacity(2):
+            if hh.can_fit(2):
                 # Try to find a compatible pair
                 for i, male in enumerate(males):
                     if male.household_id is not None:
@@ -1015,11 +1064,11 @@ class PopulationSynthesizer:
 
             # Find suitable household
             for hh in households:
-                if not hh.has_capacity():
+                if not hh.can_fit():
                     continue
 
                 # Check if household has adults who can be parents
-                head = hh.get_head()
+                head = hh.head
                 if head and head.can_be_parent_of(child, min_age_gap):
                     hh.add_member(child)
                     assigned += 1
@@ -1235,14 +1284,160 @@ class PopulationSynthesizer:
         return 'male'
 
     def _translate_hh_role(self, role_str: str) -> str:
-        """Translate household role from Swedish."""
+        """Translate household role from Swedish (aggregate HHtyp table)."""
         if pd.isna(role_str):
             return 'single'
         
         role_lower = str(role_str).lower()
         if 'samman' in role_lower or 'cohab' in role_lower:
             return 'cohabiting'
+        elif 'övrig' in role_lower or 'other' in role_lower:
+            return 'other'
         return 'single'
+    
+    def _translate_hh_position(self, position_str: str) -> str:
+        """
+        Translate detailed household position from Swedish.
+        
+        Handles positions from 60_FolkmHHStallning_PRI.px table:
+        - Person i gift par/registrerat partnerskap -> cohabiting
+        - Personer i samboförhållande -> cohabiting
+        - Ensamstående förälder -> single
+        - Barn -> child
+        - Ensamboende -> single
+        - Ej ensamboende personer, övriga -> other
+        """
+        if pd.isna(position_str):
+            return 'single'
+        
+        pos_lower = str(position_str).lower()
+        
+        # Order matters - check more specific patterns first
+        if 'barn' == pos_lower.strip():
+            return 'child'
+        elif 'ensamboende' in pos_lower:
+            return 'single'
+        elif 'ensamstående förälder' in pos_lower:
+            return 'single'
+        elif 'gift par' in pos_lower or 'partnerskap' in pos_lower:
+            return 'cohabiting'
+        elif 'sambo' in pos_lower:
+            return 'cohabiting'
+        elif 'övrig' in pos_lower:
+            return 'other'
+        elif 'uppgift saknas' in pos_lower:
+            return 'unknown'
+        
+        return 'single'
+    
+    def _build_role_probability_table(self, position_data: pd.DataFrame) -> None:
+        """
+        Build lookup table of role probabilities by age group and sex.
+        
+        This enables assigning roles based on actual census proportions
+        rather than just the aggregate HHtyp (single/cohabiting/other).
+        """
+        self._role_probs = {}  # (age_group, sex) -> {role: probability}
+        
+        # Identify columns
+        age_col = 'Ålder' if 'Ålder' in position_data.columns else 'age_group'
+        sex_col = 'Kön' if 'Kön' in position_data.columns else 'sex'
+        pos_col = 'Hushållsställning' if 'Hushållsställning' in position_data.columns else 'hh_position'
+        count_col = 'Antal' if 'Antal' in position_data.columns else 'count'
+        
+        if count_col not in position_data.columns:
+            # Try to find any numeric column
+            for col in position_data.columns:
+                if position_data[col].dtype in ['int64', 'float64']:
+                    count_col = col
+                    break
+        
+        # Aggregate by age/sex/position
+        for (age_grp, sex), group in position_data.groupby([age_col, sex_col]):
+            role_counts = {}
+            total = 0
+            
+            for _, row in group.iterrows():
+                position = row.get(pos_col, '')
+                count = int(row.get(count_col, 0)) if pd.notna(row.get(count_col)) else 0
+                
+                if count <= 0:
+                    continue
+                
+                role = self._translate_hh_position(position)
+                if role != 'unknown':
+                    role_counts[role] = role_counts.get(role, 0) + count
+                    total += count
+            
+            # Convert to probabilities
+            if total > 0:
+                sex_eng = self._translate_sex(sex)
+                self._role_probs[(age_grp, sex_eng)] = {
+                    role: count / total for role, count in role_counts.items()
+                }
+        
+        logger.info(f"Built role probability table for {len(self._role_probs)} age/sex groups")
+    
+    def _sample_role_for_agent(self, age: int, sex: str) -> str:
+        """
+        Sample a role for an agent based on census probabilities.
+        
+        Uses the household position data to determine the probability
+        that someone of a given age and sex has each role.
+        """
+        if not hasattr(self, '_role_probs') or not self._role_probs:
+            # No detailed data, fall back to simple age-based rule
+            if age < 18:
+                return 'child'
+            return random.choice(['single', 'cohabiting'])
+        
+        # Find matching age group
+        age_group = self._age_to_group(age)
+        
+        role_probs = self._role_probs.get((age_group, sex))
+        if not role_probs:
+            # Try alternative sex labels
+            for key, probs in self._role_probs.items():
+                if key[0] == age_group:
+                    role_probs = probs
+                    break
+        
+        if not role_probs:
+            # Fall back to age-based default
+            if age < 18:
+                return 'child'
+            return random.choice(['single', 'cohabiting'])
+        
+        # Weighted random choice
+        roles = list(role_probs.keys())
+        weights = [role_probs[r] for r in roles]
+        return random.choices(roles, weights=weights, k=1)[0]
+    
+    def _age_to_group(self, age: int) -> str:
+        """Convert age to census age group string."""
+        # These match the 60_FolkmHHStallning_PRI.px age groups
+        if age <= 5:
+            return '0-5 år'
+        elif age <= 15:
+            return '6-15 år'
+        elif age <= 18:
+            return '16-18 år'
+        elif age <= 24:
+            return '19-24 år'
+        elif age <= 34:
+            return '25-34 år'
+        elif age <= 44:
+            return '35-44 år'
+        elif age <= 54:
+            return '45-54 år'
+        elif age <= 64:
+            return '55-64 år'
+        elif age <= 74:
+            return '65-74 år'
+        elif age <= 84:
+            return '75-84 år'
+        else:
+            return '85- år'
 
     def _sample_age_from_group(self, age_group: str) -> int:
         """Sample a specific age from an age group range."""
@@ -1657,7 +1852,7 @@ class PopulationSynthesizer:
         if income_weighted:
             households = sorted(
                 households,
-                key=lambda h: h.get_household_income(),
+                key=lambda h: h.income,
                 reverse=True
             )
 

@@ -35,8 +35,8 @@ class TestModelsIntegration:
         
         # Verify household structure
         assert hh.is_full()
-        assert hh.is_couple_household()
-        assert len(hh.get_children()) == 2
+        assert hh.is_couple()
+        assert len(hh.children) == 2
         
         # Verify linkages
         assert all(m.household_id == 1 for m in hh.members)
@@ -215,20 +215,20 @@ class TestHouseholdTypeIntegration:
         hh = single_person_household
         
         assert hh.is_full()
-        assert hh.is_single_person()
-        assert not hh.is_couple_household()
+        assert hh.is_single()
+        assert not hh.is_couple()
         assert not hh.is_single_parent()
-        assert len(hh.get_children()) == 0
+        assert len(hh.children) == 0
 
     def test_couple_household_complete(self, couple_household):
         """Test couple household is complete and valid."""
         hh = couple_household
         
         assert hh.is_full()
-        assert hh.is_couple_household()
-        assert not hh.is_single_person()
+        assert hh.is_couple()
+        assert not hh.is_single()
         assert not hh.is_single_parent()
-        assert len(hh.get_children()) == 0
+        assert len(hh.children) == 0
 
     def test_single_parent_household_complete(self, single_parent_household):
         """Test single parent household is complete and valid."""
@@ -236,9 +236,9 @@ class TestHouseholdTypeIntegration:
         
         assert hh.is_full()
         assert hh.is_single_parent()
-        assert not hh.is_couple_household()
-        assert not hh.is_single_person()
-        assert len(hh.get_children()) == 2
+        assert not hh.is_couple()
+        assert not hh.is_single()
+        assert len(hh.children) == 2
 
 
 class TestEdgeCasesIntegration:
@@ -253,7 +253,7 @@ class TestEdgeCasesIntegration:
         
         assert hh.is_full()
         assert agent.status == 'retired'
-        assert hh.is_single_person()
+        assert hh.is_single()
 
     def test_young_adult_single(self):
         """Test young adult living alone."""
@@ -280,6 +280,6 @@ class TestEdgeCasesIntegration:
         hh.add_member(Agent(agent_id=6, age=8, sex='female'))
         
         assert hh.is_full()
-        assert hh.is_couple_household()
-        assert len(hh.get_children()) == 4
-        assert hh.get_household_income() == 1400000
+        assert hh.is_couple()
+        assert len(hh.children) == 4
+        assert hh.income == 1400000

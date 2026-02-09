@@ -22,10 +22,11 @@ def main():
     print(f"Variables: {len(metadata.get('variables', []))}")
     
     # Query specific data
-    print("\nQuerying car ownership data for area 107...")
+    # Note: The Personbilar table requires the full area name format "107 Haga"
+    print("\nQuerying car ownership data for area 107 Haga...")
     car_data = client.query_table(
         table_path="Övrigt/Personbilar/10_Bilar_PRI.px",
-        area_code="107",
+        area_code="107 Haga",
         year=2023
     )
     

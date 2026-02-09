@@ -150,14 +150,14 @@ class TestSynthesisConstraints:
         """Test household capacity constraints."""
         hh = Household(household_id=1, size=2)
         
-        assert hh.has_capacity(1)
-        assert hh.has_capacity(2)
-        assert not hh.has_capacity(3)
+        assert hh.can_fit(1)
+        assert hh.can_fit(2)
+        assert not hh.can_fit(3)
         
         hh.add_member(Agent(agent_id=1, age=35, sex='male'))
         
-        assert hh.has_capacity(1)
-        assert not hh.has_capacity(2)
+        assert hh.can_fit(1)
+        assert not hh.can_fit(2)
 
 
 class TestDataFrameInput:
@@ -205,8 +205,8 @@ class TestEdgeCases:
         hh.add_member(agent)
         
         assert hh.is_full()
-        assert hh.is_single_person()
-        assert not hh.is_couple_household()
+        assert hh.is_single()
+        assert not hh.is_couple()
 
     def test_large_household(self):
         """Test household with many members."""
@@ -221,7 +221,7 @@ class TestEdgeCases:
             hh.add_member(Agent(agent_id=i+3, age=15-i*3, sex='male' if i % 2 == 0 else 'female'))
         
         assert hh.is_full()
-        assert len(hh.get_children()) == 4
+        assert len(hh.children) == 4
 
     def test_zero_count_category(self):
         """Test handling of zero-count categories."""

@@ -23,9 +23,9 @@ class TestDwelling:
         dwelling = Dwelling(dwelling_id=2, floor_area=95.0, house_type='apartment')
         assert dwelling.recommended_occupants == 4  # 95m² -> 4 persons (95-119 range)
         assert dwelling.max_occupants == 6  # 95/15 = 6
-        assert dwelling.can_accommodate(3)
-        assert dwelling.can_accommodate(4)
-        assert not dwelling.can_accommodate(7)
+        assert dwelling.can_fit(3)
+        assert dwelling.can_fit(4)
+        assert not dwelling.can_fit(7)
 
     def test_create_house(self):
         """Test creating a detached house."""
@@ -244,7 +244,7 @@ class TestHousehold:
         assert hh.head_id == 1
         assert hh.partner_id == 2
         assert hh.is_full()
-        assert hh.is_couple_household()
+        assert hh.is_couple()
 
     def test_add_child(self):
         """Test adding a child to household."""
@@ -282,13 +282,13 @@ class TestHousehold:
         """Test has_capacity method."""
         hh = Household(household_id=1, size=3)
         
-        assert hh.has_capacity(1)
-        assert hh.has_capacity(3)
-        assert not hh.has_capacity(4)
+        assert hh.can_fit(1)
+        assert hh.can_fit(3)
+        assert not hh.can_fit(4)
         
         hh.add_member(Agent(agent_id=1, age=35, sex='male'))
-        assert hh.has_capacity(2)
-        assert not hh.has_capacity(3)
+        assert hh.can_fit(2)
+        assert not hh.can_fit(3)
 
     def test_get_head(self):
         """Test getting household head."""
@@ -296,14 +296,14 @@ class TestHousehold:
         agent = Agent(agent_id=1, age=35, sex='male')
         hh.add_member(agent)
         
-        head = hh.get_head()
+        head = hh.head
         assert head is not None
         assert head.agent_id == 1
 
     def test_get_head_empty_household(self):
         """Test getting head from empty household."""
         hh = Household(household_id=1, size=2)
-        assert hh.get_head() is None
+        assert hh.head is None
 
     def test_get_partner(self):
         """Test getting partner."""
@@ -311,7 +311,7 @@ class TestHousehold:
         hh.add_member(Agent(agent_id=1, age=35, sex='male'))
         hh.add_member(Agent(agent_id=2, age=32, sex='female'))
         
-        partner = hh.get_partner()
+        partner = hh.partner
         assert partner is not None
         assert partner.agent_id == 2
 
@@ -323,7 +323,7 @@ class TestHousehold:
         hh.add_member(Agent(agent_id=3, age=12, sex='male'))
         hh.add_member(Agent(agent_id=4, age=8, sex='female'))
         
-        children = hh.get_children()
+        children = hh.children
         assert len(children) == 2
         assert all(c.is_child() for c in children)
 
@@ -332,8 +332,8 @@ class TestHousehold:
         single_hh = Household(household_id=1, size=1)
         multi_hh = Household(household_id=2, size=3)
         
-        assert single_hh.is_single_person()
-        assert not multi_hh.is_single_person()
+        assert single_hh.is_single()
+        assert not multi_hh.is_single()
 
     def test_get_household_income(self):
         """Test household income calculation."""
@@ -342,7 +342,7 @@ class TestHousehold:
         hh.add_member(Agent(agent_id=2, age=38, sex='female', income=400000))
         hh.add_member(Agent(agent_id=3, age=12, sex='male'))  # Child, income=0
         
-        assert hh.get_household_income() == 1000000
+        assert hh.income == 1000000
 
     def test_to_dict(self):
         """Test household serialization."""
@@ -379,10 +379,10 @@ class TestAgentHouseholdIntegration:
         hh.add_member(daughter)
         
         assert hh.is_full()
-        assert hh.is_couple_household()
+        assert hh.is_couple()
         assert not hh.is_single_parent()
-        assert len(hh.get_children()) == 2
-        assert hh.get_household_income() == 1200000
+        assert len(hh.children) == 2
+        assert hh.income == 1200000
         
         # Verify parent can be parent of children
         assert father.can_be_parent_of(son)

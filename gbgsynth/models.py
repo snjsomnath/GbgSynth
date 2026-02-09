@@ -83,17 +83,22 @@ class Dwelling:
         """Check if dwelling is unoccupied."""
         return self.household_id is None
 
-    def can_accommodate(self, household_size: int) -> bool:
+    @property
+    def is_occupied(self) -> bool:
+        """Check if dwelling is occupied."""
+        return self.household_id is not None
+
+    def can_fit(self, num_people: int) -> bool:
         """
         Check if dwelling can reasonably accommodate a household.
         
         Args:
-            household_size: Number of people in household
+            num_people: Number of people in household
             
         Returns:
             True if dwelling size is appropriate for household
         """
-        return self.min_occupants <= household_size <= self.max_occupants
+        return self.min_occupants <= num_people <= self.max_occupants
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert dwelling to dictionary for export."""
@@ -293,11 +298,17 @@ class Household:
         """Check if household has reached its target size."""
         return len(self.members) == self.size
 
-    def has_capacity(self, count: int = 1) -> bool:
+    @property
+    def is_empty(self) -> bool:
+        """Check if household has no members."""
+        return len(self.members) == 0
+
+    def can_fit(self, count: int = 1) -> bool:
         """Check if household can accommodate additional members."""
         return len(self.members) + count <= self.size
 
-    def get_head(self) -> Optional[Agent]:
+    @property
+    def head(self) -> Optional[Agent]:
         """Get the household head agent."""
         if self.head_id:
             for member in self.members:
@@ -305,7 +316,8 @@ class Household:
                     return member
         return None
 
-    def get_partner(self) -> Optional[Agent]:
+    @property
+    def partner(self) -> Optional[Agent]:
         """Get the partner agent."""
         if self.partner_id:
             for member in self.members:
@@ -313,24 +325,36 @@ class Household:
                     return member
         return None
 
-    def get_children(self) -> List[Agent]:
+    @property
+    def children(self) -> List[Agent]:
         """Get all child agents."""
         return [m for m in self.members if m.agent_id in self.child_ids]
 
-    def is_couple_household(self) -> bool:
+    @property
+    def num_children(self) -> int:
+        """Count of children (under 18) in household."""
+        return sum(1 for m in self.members if m.age < 18)
+
+    @property
+    def num_adults(self) -> int:
+        """Count of adults (18+) in household."""
+        return sum(1 for m in self.members if m.age >= 18)
+
+    def is_couple(self) -> bool:
         """Check if this is a couple household."""
         return self.head_id is not None and self.partner_id is not None
 
     def is_single_parent(self) -> bool:
         """Check if this is a single-parent household."""
-        return len(self.child_ids) > 0 and not self.is_couple_household()
+        return len(self.child_ids) > 0 and not self.is_couple()
 
-    def is_single_person(self) -> bool:
+    def is_single(self) -> bool:
         """Check if this is a single-person household."""
         return self.size == 1
 
-    def get_household_income(self) -> float:
-        """Calculate total household income."""
+    @property
+    def income(self) -> float:
+        """Total household income."""
         return sum(m.income or 0 for m in self.members)
 
     def assign_dwelling(self, dwelling: Dwelling) -> None:
@@ -365,7 +389,9 @@ class Household:
             'head_id': self.head_id,
             'partner_id': self.partner_id,
             'child_ids': self.child_ids,
-            'total_income': self.get_household_income(),
-            'is_couple': self.is_couple_household(),
+            'num_children': self.num_children,
+            'num_adults': self.num_adults,
+            'total_income': self.income,
+            'is_couple': self.is_couple(),
             'is_single_parent': self.is_single_parent()
         }

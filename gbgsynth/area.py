@@ -576,14 +576,14 @@ class GbgArea:
                 size_groups = dwellings_by_type_and_size.get(house_type, {})
                 if target_size in size_groups:
                     for dwelling in size_groups[target_size]:
-                        if dwelling.is_vacant() and dwelling.can_accommodate(household_size):
+                        if dwelling.is_vacant() and dwelling.can_fit(household_size):
                             return dwelling
         
         # Priority 3: Any compatible dwelling
         for house_type in search_order:
             for size_group in dwellings_by_type_and_size.get(house_type, {}).values():
                 for dwelling in size_group:
-                    if dwelling.is_vacant() and dwelling.can_accommodate(household_size):
+                    if dwelling.is_vacant() and dwelling.can_fit(household_size):
                         return dwelling
         
         return None
@@ -927,9 +927,9 @@ class GbgArea:
             'avg_household_size': total_pop / total_hh if total_hh > 0 else 0,
             'num_children': sum(1 for a in self.individuals if a.is_child()),
             'num_adults': sum(1 for a in self.individuals if a.is_adult()),
-            'num_couples': sum(1 for h in self.households if h.is_couple_household()),
+            'num_couples': sum(1 for h in self.households if h.is_couple()),
             'num_single_parent': sum(1 for h in self.households if h.is_single_parent()),
-            'num_single_person': sum(1 for h in self.households if h.is_single_person()),
+            'num_single_person': sum(1 for h in self.households if h.is_single()),
             'avg_income': sum(a.income or 0 for a in self.individuals) / total_pop if total_pop > 0 else 0,
             'total_cars': sum(h.cars for h in self.households),
             # Housing type statistics
@@ -1054,11 +1054,17 @@ class GbgArea:
         # Log IPF statistics if available
         if self.ipf_stats:
             logger.info("IPF Statistics:")
-            for key, ipf_data in self.ipf_stats.items():
-                logger.info(f"  {key.capitalize()}:")
-                logger.info(f"    RMSE: {ipf_data['rmse']:.4f}")
-                logger.info(f"    Converged: {ipf_data['converged']}")
-                logger.info(f"    Iterations: {ipf_data['iterations']}")
+            logger.info(f"  Method: {self.ipf_stats.get('method', 'unknown')}")
+            if 'rmse' in self.ipf_stats:
+                logger.info(f"  RMSE: {self.ipf_stats['rmse']:.4f}")
+            if 'converged' in self.ipf_stats:
+                logger.info(f"  Converged: {self.ipf_stats['converged']}")
+            if 'iterations' in self.ipf_stats:
+                logger.info(f"  Iterations: {self.ipf_stats['iterations']}")
+            if 'households_created' in self.ipf_stats:
+                logger.info(f"  Households: {self.ipf_stats['households_created']}")
+            if 'individuals_placed' in self.ipf_stats:
+                logger.info(f"  Individuals Placed: {self.ipf_stats['individuals_placed']}")
             logger.info("")
         
         if include_marginal_comparison:
