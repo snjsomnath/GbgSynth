@@ -74,3 +74,6 @@ haga_*.csv
 
 # API cache
 .gbgsynth_cache/
+
+# Bundled data files (generated on first run, too large for git)
+gbgsynth/data/
