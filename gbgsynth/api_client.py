@@ -3,6 +3,9 @@ PxWeb API Client for Gothenburg City Statistics.
 
 This module provides a robust client for interacting with the Gothenburg
 PxWeb API, including metadata discovery and structured querying.
+
+All API responses are cached locally to minimize API calls during development
+and testing.
 """
 
 import requests
@@ -15,6 +18,8 @@ import os
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
+
+from gbgsynth.exceptions import APIError
 
 logger = logging.getLogger(__name__)
 
@@ -201,8 +206,15 @@ class APICache:
 
 class PxWebClient:
     """
-    A systematic client for the Gothenburg City PxWeb API.
-    Handles metadata discovery, automated query building, and response caching.
+    Client for the Gothenburg City PxWeb API.
+    
+    Features:
+    - Automatic caching of all API responses (default: 7 days TTL)
+    - Rate limiting to be respectful to the API
+    - Retry logic for transient failures
+    
+    All responses are cached to `.gbgsynth_cache/` by default, so repeated
+    runs don't make unnecessary API calls.
     """
 
     BASE_URL = "https://pxweb.goteborg.se/api/v1/sv/1. Göteborg och dess delområden/Primärområden/"
@@ -216,18 +228,18 @@ class PxWebClient:
         cache_ttl_days: int = 7
     ):
         """
-        Initialize the PxWeb client with a persistent session.
+        Initialize the PxWeb client.
         
         Args:
-            request_delay: Delay between requests in seconds (to avoid rate limits)
-            max_retries: Maximum retries for rate-limited requests
-            cache_enabled: Whether to cache API responses locally
-            cache_dir: Directory for cached responses
-            cache_ttl_days: Days until cached responses expire
+            request_delay: Delay between requests in seconds (default: 0.2)
+            max_retries: Maximum retries for failed requests (default: 3)
+            cache_enabled: Whether to cache API responses locally (default: True)
+            cache_dir: Directory for cached responses (default: .gbgsynth_cache)
+            cache_ttl_days: Days until cached responses expire (default: 7)
         """
         self.session = requests.Session()
         self.session.headers.update({
-            "User-Agent": "GbgSynth/0.1.0 Python Population Synthesizer",
+            "User-Agent": "GbgSynth/0.3.0 Python Population Synthesizer",
             "Accept": "application/json"
         })
         self.request_delay = request_delay
@@ -242,7 +254,7 @@ class PxWebClient:
         )
         
         if cache_enabled:
-            logger.info(f"API cache enabled: {cache_dir} (TTL: {cache_ttl_days} days)")
+            logger.debug(f"API cache enabled: {cache_dir} (TTL: {cache_ttl_days} days)")
 
     def _rate_limited_request(self, method: str, url: str, **kwargs) -> requests.Response:
         """Make a rate-limited request with retry logic."""
@@ -280,10 +292,8 @@ class PxWebClient:
         Returns:
             Dictionary containing table metadata including all variables and their options
 
-        Example:
-            >>> client = PxWebClient()
-            >>> meta = client.fetch_metadata("Övrigt/Personbilar/10_Bilar_PRI.px")
-            >>> print(meta['variables'][0]['text'])  # 'Område'
+        Raises:
+            APIError: If the API request fails
         """
         url = f"{self.BASE_URL}{table_path}"
         
@@ -300,12 +310,11 @@ class PxWebClient:
             # Cache the response
             self.cache.set('GET', url, metadata, description=f"metadata:{table_path}")
             
-            logger.info(f"Successfully fetched metadata for {table_path}")
+            logger.debug(f"Fetched metadata for {table_path}")
             return metadata
             
         except requests.RequestException as e:
-            logger.error(f"Failed to fetch metadata for {table_path}: {e}")
-            raise
+            raise APIError(f"Failed to fetch metadata: {e}", url=url)
 
     def get_area_codes(self, sample_table: str = "Befolkning/Folkmängd/Folkmängd helår/63_FolkmHHtypPRI.px") -> Dict[str, Dict[str, str]]:
         """
@@ -414,7 +423,6 @@ class PxWebClient:
         cached = self.cache.get('POST', url, query_payload)
         if cached is not None:
             df = self._parse_json_response(cached)
-            logger.info(f"Cache hit for {table_path}, area {area_code}, year {year}")
             return df
 
         try:
@@ -427,7 +435,7 @@ class PxWebClient:
             self.cache.set('POST', url, json_data, query_payload, description=cache_desc)
             
             df = self._parse_json_response(json_data)
-            logger.info(f"Successfully queried {table_path} for area {area_code}, year {year}")
+            logger.debug(f"Queried {table_path} for area {area_code}, year {year}")
             
             # Check for "Sekretess" (privacy suppression)
             if '..' in df.values.astype(str):
@@ -436,8 +444,7 @@ class PxWebClient:
             return df
             
         except requests.RequestException as e:
-            logger.error(f"Failed to query {table_path}: {e}")
-            raise
+            raise APIError(f"Failed to query {table_path}: {e}", url=url)
 
     def query_all_variables(
         self,
@@ -497,7 +504,6 @@ class PxWebClient:
         # Check cache first
         cached = self.cache.get('POST', url, query_payload)
         if cached is not None:
-            logger.info(f"Cache hit for {table_path}, area {area_code}, year {year}")
             return self._parse_json_response(cached)
 
         try:
@@ -511,8 +517,7 @@ class PxWebClient:
             
             return self._parse_json_response(json_data)
         except requests.RequestException as e:
-            logger.error(f"Failed to query all variables for {table_path}: {e}")
-            raise
+            raise APIError(f"Failed to query {table_path}: {e}", url=url)
 
     def _parse_json_response(self, json_data: Dict) -> pd.DataFrame:
         """

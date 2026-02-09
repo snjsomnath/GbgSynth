@@ -16,6 +16,8 @@ if TYPE_CHECKING:
     from matplotlib.figure import Figure
     from matplotlib.axes import Axes
 
+from gbgsynth.exceptions import DataNotGeneratedError
+
 logger = logging.getLogger(__name__)
 
 # Check for optional dependencies
@@ -84,7 +86,7 @@ def plot_age_distribution(
     _check_matplotlib()
     
     if not area._is_generated:
-        raise RuntimeError("Must call generate() before plotting")
+        raise DataNotGeneratedError("plotting")
     
     if ax is None:
         fig, ax = plt.subplots(figsize=figsize)
@@ -151,7 +153,7 @@ def plot_household_size(
     _check_matplotlib()
     
     if not area._is_generated:
-        raise RuntimeError("Must call generate() before plotting")
+        raise DataNotGeneratedError("plotting")
     
     if ax is None:
         fig, ax = plt.subplots(figsize=figsize)
@@ -237,7 +239,7 @@ def plot_marginal_comparison(
     _check_matplotlib()
     
     if not area._is_generated:
-        raise RuntimeError("Must call generate() before plotting")
+        raise DataNotGeneratedError("plotting")
     
     comparison = area.compare_to_marginals(print_report=False)
     
@@ -319,7 +321,7 @@ def plot_car_ownership(
     _check_matplotlib()
     
     if not area._is_generated:
-        raise RuntimeError("Must call generate() before plotting")
+        raise DataNotGeneratedError("plotting")
     
     if ax is None:
         fig, ax = plt.subplots(figsize=figsize)
@@ -399,7 +401,7 @@ def plot_population_pyramid(
     _check_matplotlib()
     
     if not area._is_generated:
-        raise RuntimeError("Must call generate() before plotting")
+        raise DataNotGeneratedError("plotting")
     
     if ax is None:
         fig, ax = plt.subplots(figsize=figsize)
@@ -536,7 +538,7 @@ def plot_error_analysis(
     _check_matplotlib()
     
     if not area._is_generated:
-        raise RuntimeError("Must call generate() before plotting")
+        raise DataNotGeneratedError("plotting")
     
     comparison = area.compare_to_marginals(print_report=False)
     
@@ -636,7 +638,7 @@ def plot_scatter_comparison(
     _check_matplotlib()
     
     if not area._is_generated:
-        raise RuntimeError("Must call generate() before plotting")
+        raise DataNotGeneratedError("plotting")
     
     comparison = area.compare_to_marginals(print_report=False)
     

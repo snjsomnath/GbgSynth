@@ -100,6 +100,11 @@ class Dwelling:
         """
         return self.min_occupants <= num_people <= self.max_occupants
 
+    def __repr__(self) -> str:
+        """Return a string representation for debugging."""
+        status = "vacant" if self.is_vacant() else f"hh={self.household_id}"
+        return f"Dwelling(id={self.dwelling_id}, {self.floor_area:.0f}m², {self.house_type_sv}, {status})"
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert dwelling to dictionary for export."""
         return {
@@ -174,6 +179,11 @@ class Agent:
     def can_be_parent(self) -> bool:
         """Check if agent is old enough to be a parent."""
         return self.age >= 18
+
+    def __repr__(self) -> str:
+        """Return a string representation for debugging."""
+        hh = f"hh={self.household_id}" if self.household_id else "unassigned"
+        return f"Agent(id={self.agent_id}, {self.age}y {self.sex[0].upper()}, {self.hh_role}, {hh})"
 
     def can_be_partner_with(self, other: 'Agent', max_age_diff: int = 10) -> bool:
         """
@@ -272,6 +282,17 @@ class Household:
     dwelling_id: Optional[int] = None
     dwelling: Optional[Dwelling] = field(default=None, repr=False)
     floor_area: Optional[float] = None
+
+    def __post_init__(self):
+        """Validate household attributes."""
+        if self.size < 1:
+            raise ValueError(f"Household size must be >= 1, got {self.size}")
+
+    def __repr__(self) -> str:
+        """Return a string representation for debugging."""
+        members_str = f"{len(self.members)}/{self.size}"
+        hustyp = self.assigned_hustyp or self.house_type or "unknown"
+        return f"Household(id={self.household_id}, {members_str} members, {hustyp})"
 
     def add_member(self, agent: Agent) -> None:
         """

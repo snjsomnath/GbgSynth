@@ -16,6 +16,7 @@ def main():
     
     # Initialize
     city = GbgSynth(year=2023)
+    print(f"\n{city}")  # Shows repr
     
     # List available areas
     print(f"\nAvailable areas: {len(city.list_areas())} neighbourhoods")
@@ -25,8 +26,12 @@ def main():
     print("\nGenerating population for Haga...")
     haga = city.synthesize("Haga")
     
-    # Log statistics
-    haga.log_statistics()
+    # Show result
+    print(f"\n{haga}")  # Shows repr with counts
+    
+    # Access data as DataFrames
+    print(f"\nAge distribution:")
+    print(haga.individuals_df['age'].describe())
     
     # Save to files
     haga.save(output_dir="./output")
@@ -35,10 +40,6 @@ def main():
     print("\n" + "=" * 50)
     print("Success! See other examples for more features.")
 
-
-if __name__ == "__main__":
-    main()
-    print("  - Read the README.md for full documentation")
 
 if __name__ == "__main__":
     main()

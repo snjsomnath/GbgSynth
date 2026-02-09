@@ -1,26 +1,84 @@
-"""GbgSynth - Synthetic Population Generator for Gothenburg."""
+"""GbgSynth - Synthetic Population Generator for Gothenburg.
 
+Simple API:
+    >>> from gbgsynth import GbgSynth
+    >>> city = GbgSynth(year=2024)
+    >>> haga = city.synthesize("Haga")
+    >>> haga.save("output/")
+
+For advanced usage, see the documentation.
+"""
+
+# Core API - what most users need
 from gbgsynth.gbgsynth import GbgSynth
-from gbgsynth.api_client import PxWebClient
-from gbgsynth.models import Agent, Household, Dwelling
 from gbgsynth.area import GbgArea
-from gbgsynth.ipf import IPFSynthesizer, HouseholdIPF, ConstrainedIPF
+from gbgsynth.models import Agent, Household, Dwelling
+
+# Exceptions for error handling
+from gbgsynth.exceptions import (
+    GbgSynthError,
+    AreaNotFoundError,
+    APIError,
+    DataNotGeneratedError,
+    InvalidDataError,
+    PrivacySuppressionError,
+)
+
+# Optional modules (import explicitly if needed)
 from gbgsynth import plotting
 from gbgsynth import validation
-from gbgsynth.validation import Validator
 
-__version__ = "0.2.0"
+# Data utilities for managing bundled data
+from gbgsynth.data_utils import (
+    download_pri_shapefile,
+    download_footprints,
+    ensure_shapefile_available,
+    ensure_areas_json_available,
+    ensure_footprints_available,
+    ensure_neighbourhood_heights_available,
+    ensure_data_available,
+    generate_areas_json,
+    generate_neighbourhood_heights,
+    is_shapefile_available,
+    is_areas_json_available,
+    is_footprints_available,
+    is_neighbourhood_heights_available,
+    get_neighbourhood_heights_path,
+    get_missing_neighbourhood_heights,
+)
+
+__version__ = "0.3.0"
 __all__ = [
-    "GbgSynth", 
-    "PxWebClient", 
-    "Agent", 
+    # Core
+    "GbgSynth",
+    "GbgArea",
+    "Agent",
     "Household",
     "Dwelling",
-    "GbgArea",
-    "IPFSynthesizer",
-    "HouseholdIPF",
-    "ConstrainedIPF",
+    # Exceptions
+    "GbgSynthError",
+    "AreaNotFoundError",
+    "APIError",
+    "DataNotGeneratedError",
+    "InvalidDataError",
+    "PrivacySuppressionError",
+    # Modules
     "plotting",
     "validation",
-    "Validator",
+    # Data utilities
+    "download_pri_shapefile",
+    "download_footprints",
+    "ensure_shapefile_available",
+    "ensure_areas_json_available",
+    "ensure_footprints_available",
+    "ensure_neighbourhood_heights_available",
+    "ensure_data_available",
+    "generate_areas_json",
+    "generate_neighbourhood_heights",
+    "is_shapefile_available",
+    "is_areas_json_available",
+    "is_footprints_available",
+    "is_neighbourhood_heights_available",
+    "get_neighbourhood_heights_path",
+    "get_missing_neighbourhood_heights",
 ]

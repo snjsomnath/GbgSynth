@@ -11,6 +11,7 @@ from typing import Dict, List, Optional
 
 from gbgsynth.api_client import PxWebClient
 from gbgsynth.config import Config
+from gbgsynth.exceptions import DataNotGeneratedError, InvalidDataError
 from gbgsynth.models import Agent, Household, Dwelling
 from gbgsynth.synthesizer import PopulationSynthesizer
 
@@ -62,46 +63,60 @@ class GbgArea:
         # Store original marginals for validation
         self._marginals: dict = {}
         
-        # IPF statistics (if IPF is used)
-        self.ipf_stats: dict = {}
+        # Synthesis statistics
+        self.stats: dict = {}
 
-    def generate(self, buildings: Optional[pd.DataFrame] = None, use_ipf: bool = False,
-                 use_constrained_ipf: bool = False, use_topdown: bool = True,
-                 allocate_dwellings: bool = True) -> None:
+    def __repr__(self) -> str:
+        """Return string representation for debugging."""
+        status = "generated" if self._is_generated else "not generated"
+        if self._is_generated:
+            return f"GbgArea('{self.area_name}', year={self.year}, pop={len(self.individuals)}, hh={len(self.households)})"
+        return f"GbgArea('{self.area_name}', year={self.year}, {status})"
+
+    def generate(self, buildings: Optional[pd.DataFrame] = None,
+                 allocate_dwellings: bool = True) -> 'GbgArea':
         """
-        Execute the full synthesis pipeline for this area.
+        Generate synthetic population for this area.
 
         Steps:
-        1. Fetch required census tables
-        2. Run population synthesizer (with optional IPF)
-        3. Assign housing types (Hustyp)
-        4. Link to building footprints (if provided)
-        5. Store results
+        1. Fetch required census tables from API (cached)
+        2. Run population synthesizer
+        3. Allocate dwellings (if enabled)
+        4. Store results
 
         Args:
-            buildings: Optional GeoDataFrame/DataFrame with building footprints.
-                      Should contain columns for building_id, type, and optionally
-                      capacity. If provided, households will be linked to specific
-                      buildings based on their assigned_hustyp.
-            use_ipf: If True, use Iterative Proportional Fitting
-                    for better marginal fit. If False, use greedy matching.
-            use_constrained_ipf: If True, use constrained IPF that generates
-                                complete valid household compositions directly.
-                                This ensures 100% valid households by construction.
-            use_topdown: If True (default), use top-down constrained synthesis that
-                        anchors exact household containers first, then fills with
-                        individuals. Best overall accuracy for household structure
-                        and individual demographics.
-        """
-        logger.info(f"Generating synthetic population for {self.area_name} ({self.area_code}), year {self.year}")
+            buildings: Optional GeoDataFrame with building footprints for
+                      spatial linking.
+            allocate_dwellings: If True (default), fetch dwelling data and
+                              match households to dwelling units.
 
-        # Fetch data
-        logger.info("Fetching census data...")
+        Returns:
+            self (for method chaining)
+            
+        Example:
+            >>> area = city.get_area("Haga")
+            >>> area.generate().save("output/")
+        """
+        logger.info(f"Generating population for {self.area_name} ({self.year})")
+
+        # Fetch data (cached by API client)
         population_data = self._fetch_population_data()
         household_data = self._fetch_household_data()
-        household_position_data = self._fetch_household_position_data()  # Detailed roles
+        household_position_data = self._fetch_household_position_data()
         income_data = self._fetch_income_data()
         car_data = self._fetch_car_data()
+        
+        # Validate we have required data
+        if population_data.empty:
+            raise InvalidDataError(
+                f"No population data available for {self.area_name} ({self.year})",
+                field="population_data"
+            )
+        if household_data.empty:
+            raise InvalidDataError(
+                f"No household data available for {self.area_name} ({self.year})",
+                field="household_data"
+            )
         
         # Store marginals for validation
         self._marginals = {
@@ -112,39 +127,27 @@ class GbgArea:
         }
 
         # Synthesize
-        logger.info("Running synthesis algorithm...")
-        synthesizer = PopulationSynthesizer(
-            self.config, 
-            use_ipf=use_ipf and not use_constrained_ipf and not use_topdown,
-            use_constrained_ipf=use_constrained_ipf,
-            use_topdown=use_topdown
-        )
+        synthesizer = PopulationSynthesizer(self.config)
         self.individuals, self.households = synthesizer.synthesize(
             population_data=population_data,
             household_data=household_data,
             income_data=income_data,
             car_data=car_data,
             buildings=buildings,
-            household_position_data=household_position_data  # Pass detailed role data
+            household_position_data=household_position_data
         )
         
-        # Store IPF statistics if used
-        if (use_ipf or use_constrained_ipf or use_topdown) and hasattr(synthesizer, 'ipf_stats'):
-            self.ipf_stats = synthesizer.ipf_stats
+        # Store synthesis stats
+        self.stats = synthesizer.stats
 
         self._is_generated = True
         logger.info(f"Synthesis complete: {len(self.individuals)} individuals, {len(self.households)} households")
-
-        # Log housing type distribution
-        hustyp_counts = {}
-        for hh in self.households:
-            ht = hh.assigned_hustyp or 'unassigned'
-            hustyp_counts[ht] = hustyp_counts.get(ht, 0) + 1
-        logger.info(f"Housing type distribution: {hustyp_counts}")
         
         # Allocate dwellings if requested
         if allocate_dwellings:
             self._allocate_dwellings()
+        
+        return self  # Allow method chaining
 
     def _allocate_dwellings(self) -> None:
         """
@@ -717,7 +720,7 @@ class GbgArea:
         import os
         
         if not self._is_generated:
-            raise RuntimeError("Must call generate() before saving")
+            raise DataNotGeneratedError("saving")
         
         os.makedirs(output_dir, exist_ok=True)
         
@@ -758,10 +761,10 @@ class GbgArea:
             filepath: Output file path
 
         Raises:
-            RuntimeError: If generate() hasn't been called yet
+            DataNotGeneratedError: If generate() hasn't been called yet
         """
         if not self._is_generated:
-            raise RuntimeError("Must call generate() before saving")
+            raise DataNotGeneratedError("saving dwellings")
 
         if not self.dwellings:
             logger.warning("No dwellings to save")
@@ -785,10 +788,10 @@ class GbgArea:
             filepath: Output file path
 
         Raises:
-            RuntimeError: If generate() hasn't been called yet
+            DataNotGeneratedError: If generate() hasn't been called yet
         """
         if not self._is_generated:
-            raise RuntimeError("Must call generate() before saving")
+            raise DataNotGeneratedError("saving individuals")
 
         # Convert to DataFrame
         df = pd.DataFrame([ind.to_dict() for ind in self.individuals])
@@ -810,10 +813,10 @@ class GbgArea:
             filepath: Output file path
 
         Raises:
-            RuntimeError: If generate() hasn't been called yet
+            DataNotGeneratedError: If generate() hasn't been called yet
         """
         if not self._is_generated:
-            raise RuntimeError("Must call generate() before saving")
+            raise DataNotGeneratedError("saving households")
 
         df = pd.DataFrame([hh.to_dict() for hh in self.households])
         
@@ -838,7 +841,7 @@ class GbgArea:
             >>> dfs['households'].describe()
         """
         if not self._is_generated:
-            raise RuntimeError("Must call generate() before accessing data")
+            raise DataNotGeneratedError("accessing data")
         
         ind_df = pd.DataFrame([ind.to_dict() for ind in self.individuals])
         ind_df['area_code'] = self.area_code

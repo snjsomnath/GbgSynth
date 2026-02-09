@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 
 from gbgsynth import plotting
 from gbgsynth.models import Agent, Household
+from gbgsynth.exceptions import DataNotGeneratedError
 from gbgsynth.area import GbgArea
 
 
@@ -153,7 +154,7 @@ class TestPlotAgeDistribution:
     def test_raises_if_not_generated(self, mock_area):
         """Test that error is raised if generate() wasn't called."""
         mock_area._is_generated = False
-        with pytest.raises(RuntimeError, match="Must call generate"):
+        with pytest.raises(DataNotGeneratedError):
             plotting.plot_age_distribution(mock_area)
 
 
@@ -318,7 +319,7 @@ class TestErrorAnalysisPlot:
     def test_error_analysis_requires_generation(self, mock_area):
         """Test that error analysis requires generated population."""
         mock_area._is_generated = False
-        with pytest.raises(RuntimeError, match="Must call generate"):
+        with pytest.raises(DataNotGeneratedError):
             plotting.plot_error_analysis(mock_area)
 
 
@@ -340,5 +341,5 @@ class TestScatterComparisonPlot:
     def test_scatter_comparison_requires_generation(self, mock_area):
         """Test that scatter comparison requires generated population."""
         mock_area._is_generated = False
-        with pytest.raises(RuntimeError, match="Must call generate"):
+        with pytest.raises(DataNotGeneratedError):
             plotting.plot_scatter_comparison(mock_area)

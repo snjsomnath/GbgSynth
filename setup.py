@@ -8,12 +8,12 @@ with open("README.md", "r", encoding="utf-8") as fh:
 setup(
     name="gbgsynth",
     version="0.1.0",
-    author="Geospatial Data Science Team",
-    author_email="your.email@example.com",
+    author="Sanjay Somanath",
+    author_email="sanjay.somanath@chalmers.se",
     description="Synthetic population generator for Gothenburg using PxWeb API",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/yourusername/gbgsynth",
+    url="https://github.com/snjsomnath/gbgsynth",
     packages=find_packages(),
     classifiers=[
         "Development Status :: 3 - Alpha",
@@ -31,6 +31,10 @@ setup(
         "requests>=2.28.0",
         "pandas>=1.5.0",
         "numpy>=1.23.0",
+        "geopandas>=0.12.0",
+        "matplotlib>=3.6.0",
+        "seaborn>=0.12.0",
+        
     ],
     extras_require={
         "dev": [

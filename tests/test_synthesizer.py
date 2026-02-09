@@ -15,7 +15,7 @@ class TestPopulationSynthesizer:
     @pytest.fixture
     def synthesizer(self):
         """Create a synthesizer instance for testing."""
-        return PopulationSynthesizer(use_ipf=False, use_constrained_ipf=False, use_topdown=False)
+        return PopulationSynthesizer()
 
     @pytest.fixture
     def simple_population_data(self):
@@ -42,20 +42,11 @@ class TestPopulationSynthesizer:
         assert synthesizer.next_agent_id == 1
         assert synthesizer.next_household_id == 1
 
-    def test_initialization_with_ipf(self):
-        """Test synthesizer with IPF enabled."""
-        synth = PopulationSynthesizer(use_ipf=True)
-        assert synth.use_ipf == True
-
-    def test_initialization_with_constrained_ipf(self):
-        """Test synthesizer with constrained IPF enabled."""
-        synth = PopulationSynthesizer(use_constrained_ipf=True)
-        assert synth.use_constrained_ipf == True
-
-    def test_initialization_with_topdown(self):
-        """Test synthesizer with top-down synthesis enabled."""
-        synth = PopulationSynthesizer(use_topdown=True)
-        assert synth.use_topdown == True
+    def test_initialization_has_stats(self):
+        """Test synthesizer has stats dictionary."""
+        synth = PopulationSynthesizer()
+        assert hasattr(synth, 'stats')
+        assert isinstance(synth.stats, dict)
 
 
 class TestSynthesizerHelperMethods:
@@ -64,7 +55,7 @@ class TestSynthesizerHelperMethods:
     @pytest.fixture
     def synthesizer(self):
         """Create a synthesizer instance for testing."""
-        return PopulationSynthesizer(use_ipf=False, use_constrained_ipf=False, use_topdown=False)
+        return PopulationSynthesizer()
 
     def test_synthesizer_has_config(self, synthesizer):
         """Test that synthesizer has config."""

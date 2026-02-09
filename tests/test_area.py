@@ -86,10 +86,10 @@ class TestGbgAreaAttributes:
         assert hasattr(area, '_marginals')
         assert isinstance(area._marginals, dict)
 
-    def test_ipf_stats_storage(self, area):
-        """Test that area has IPF stats storage."""
-        assert hasattr(area, 'ipf_stats')
-        assert isinstance(area.ipf_stats, dict)
+    def test_stats_storage(self, area):
+        """Test that area has stats storage."""
+        assert hasattr(area, 'stats')
+        assert isinstance(area.stats, dict)
 
     def test_is_generated_flag(self, area):
         """Test the is_generated flag."""
@@ -162,13 +162,11 @@ class TestGbgAreaGenerateMethod:
         sig = inspect.signature(mock_area.generate)
         assert 'buildings' in sig.parameters
 
-    def test_generate_accepts_ipf_flags(self, mock_area):
-        """Test that generate method accepts IPF flags."""
+    def test_generate_accepts_allocate_dwellings(self, mock_area):
+        """Test that generate method accepts allocate_dwellings flag."""
         import inspect
         sig = inspect.signature(mock_area.generate)
-        assert 'use_ipf' in sig.parameters
-        assert 'use_constrained_ipf' in sig.parameters
-        assert 'use_topdown' in sig.parameters
+        assert 'allocate_dwellings' in sig.parameters
 
 
 class TestGbgAreaYearHandling:

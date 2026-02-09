@@ -14,6 +14,12 @@ from typing import Dict, List, Optional, Union
 from gbgsynth.api_client import PxWebClient
 from gbgsynth.config import Config
 from gbgsynth.area import GbgArea
+from gbgsynth.exceptions import AreaNotFoundError
+from gbgsynth.data_utils import (
+    ensure_shapefile_available,
+    ensure_areas_json_available,
+    get_shapefile_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +30,15 @@ _SHAPEFILE = _DATA_DIR / "pri_shp" / "pri.shp"
 
 
 def _load_area_registry() -> Dict[str, dict]:
-    """Load the bundled area registry."""
+    """Load the bundled area registry, generating it if necessary."""
+    # Ensure areas.json exists (will generate from shapefile if needed)
+    if not _AREAS_JSON.exists():
+        if not ensure_areas_json_available():
+            raise FileNotFoundError(
+                "areas.json not found and could not be generated. "
+                "Ensure geopandas is installed or download the shapefile manually."
+            )
+    
     with open(_AREAS_JSON, 'r', encoding='utf-8') as f:
         return json.load(f)
 
@@ -52,14 +66,28 @@ class GbgSynth:
 
     This class provides a simple API for discovering areas and
     generating synthetic populations.
-
-    Example:
-        >>> city = GbgSynth(year=2024)
-        >>> pop = city.synthesize("Haga")  # One-liner synthesis
-        >>> pop.save()  # Saves individuals.csv and households.csv
+    
+    Area Identification:
+        All methods support flexible area matching. You can use:
+        - Area code: "107"
+        - Area name: "Haga" (case-insensitive)
+        - Full name: "107 Haga"
         
-        # Or access data directly
-        >>> print(f"Population: {len(pop.individuals)}")
+        Examples: "Haga", "haga", "107", "107 Haga" all refer to the same area.
+
+    Quick Start:
+        >>> city = GbgSynth(year=2024)
+        >>> haga = city.synthesize("Haga")  # One-liner synthesis
+        >>> haga.save()  # Saves individuals.csv and households.csv
+        
+    Two-Step Workflow:
+        >>> city = GbgSynth(year=2024)
+        >>> haga = city.get_area("Haga")  # Get area without generating
+        >>> haga.generate()  # Generate when ready
+        
+    Discovery:
+        >>> GbgSynth.list_areas()  # All area names
+        >>> GbgSynth.get_area_code("Haga")  # Look up code: '107'
     """
 
     # Class-level area registry (no API call needed)
@@ -70,7 +98,7 @@ class GbgSynth:
         Initialize GbgSynth.
 
         Args:
-            year: Year to generate population for
+            year: Year to generate population for (default: 2024)
             log_level: Logging level ('DEBUG', 'INFO', 'WARNING', 'ERROR')
         """
         self.year = year
@@ -84,6 +112,11 @@ class GbgSynth:
         )
 
         logger.info(f"Initialized GbgSynth for year {year}")
+
+    def __repr__(self) -> str:
+        """Return string representation."""
+        num_areas = len(get_area_registry())
+        return f"GbgSynth(year={self.year}, {num_areas} areas available)"
 
     @property
     def client(self) -> PxWebClient:
@@ -108,11 +141,25 @@ class GbgSynth:
         """
         Look up area code by name (no API call).
         
+        Supports flexible matching - all of these work:
+            - Area code: "107"
+            - Area name: "Haga" (case-insensitive)
+            - Full name: "107 Haga"
+            - Partial match: "haga" or "HAGA"
+        
         Args:
-            name: Area name like 'Haga' or '107 Haga' or '107'
+            name: Area identifier in any of the formats above
             
         Returns:
             Area code like '107', or None if not found
+            
+        Example:
+            >>> GbgSynth.get_area_code("Haga")
+            '107'
+            >>> GbgSynth.get_area_code("107")
+            '107'
+            >>> GbgSynth.get_area_code("haga")  # case-insensitive
+            '107'
         """
         registry = get_area_registry()
         name_lower = name.lower().strip()
@@ -155,11 +202,18 @@ class GbgSynth:
             logger.warning("geopandas not installed - cannot load boundaries")
             return None
         
-        if not _SHAPEFILE.exists():
-            logger.warning(f"Shapefile not found: {_SHAPEFILE}")
+        # Ensure shapefile is available (download if needed)
+        if not ensure_shapefile_available():
+            logger.warning("Shapefile not available and could not be downloaded")
             return None
         
-        gdf = gpd.read_file(_SHAPEFILE)
+        shapefile_path = get_shapefile_path()
+        if shapefile_path is None:
+            # This should not happen if ensure_shapefile_available returned True
+            logger.error("Shapefile path is None after successful availability check")
+            return None
+        
+        gdf = gpd.read_file(shapefile_path)
         # Match by PRIMÄROMRÅ column
         match = gdf[gdf['PRIMÄROMRÅ'].astype(str) == str(area_code)]
         
@@ -182,11 +236,18 @@ class GbgSynth:
             logger.warning("geopandas not installed - cannot load boundaries")
             return None
         
-        if not _SHAPEFILE.exists():
-            logger.warning(f"Shapefile not found: {_SHAPEFILE}")
+        # Ensure shapefile is available (download if needed)
+        if not ensure_shapefile_available():
+            logger.warning("Shapefile not available and could not be downloaded")
             return None
         
-        gdf = gpd.read_file(_SHAPEFILE)
+        shapefile_path = get_shapefile_path()
+        if shapefile_path is None:
+            # This should not happen if ensure_shapefile_available returned True
+            logger.error("Shapefile path is None after successful availability check")
+            return None
+        
+        gdf = gpd.read_file(shapefile_path)
         # Rename columns for easier use
         gdf = gdf.rename(columns={
             'PRIMÄROMRÅ': 'area_code',
@@ -198,17 +259,34 @@ class GbgSynth:
         """
         One-liner synthesis: generate population for an area.
         
+        This is a convenience method that combines get_area() and generate().
+        Equivalent to: city.get_area(area).generate(**kwargs)
+        
+        Supports flexible area matching - all of these work:
+            - Area code: "107"
+            - Area name: "Haga" (case-insensitive)
+            - Full name: "107 Haga"
+        
         Args:
-            area: Area identifier (code, name, or full name like '107 Haga')
-            **kwargs: Passed to generate() - e.g. use_ipf=True
+            area: Area identifier in any of the formats above
+            **kwargs: Passed to generate()
             
         Returns:
             GbgArea object with generated population
+            
+        Raises:
+            AreaNotFoundError: If area cannot be found
             
         Example:
             >>> city = GbgSynth(2024)
             >>> haga = city.synthesize("Haga")
             >>> print(len(haga.individuals))
+            
+            # All of these produce the same result:
+            >>> city.synthesize("107")
+            >>> city.synthesize("Haga")
+            >>> city.synthesize("haga")
+            >>> city.synthesize("107 Haga")
         """
         gbg_area = self.get_area(area)
         gbg_area.generate(**kwargs)
@@ -251,20 +329,27 @@ class GbgSynth:
     def get_area(self, area_identifier: str) -> GbgArea:
         """
         Get a GbgArea object for a specific area.
+        
+        Use this when you want to inspect data before generating,
+        or when you want more control over the synthesis process.
+        
+        Supports flexible area matching - all of these work:
+            - Area code: "107"
+            - Area name: "Haga" (case-insensitive)
+            - Full name: "107 Haga"
 
         Args:
-            area_identifier: Either area code ("107") or full name ("107 Haga")
-                            or just name ("Haga")
+            area_identifier: Area identifier in any of the formats above
 
         Returns:
             GbgArea object ready for synthesis
 
         Raises:
-            ValueError: If area cannot be found
+            AreaNotFoundError: If area cannot be found
 
         Example:
             >>> city = GbgSynth(year=2024)
-            >>> haga = city.get_area("Haga")
+            >>> haga = city.get_area("Haga")  # or "107" or "haga"
             >>> haga.generate()
         """
         registry = get_area_registry()
@@ -273,10 +358,7 @@ class GbgSynth:
         code = self.get_area_code(area_identifier)
         
         if code is None:
-            raise ValueError(
-                f"Area '{area_identifier}' not found. "
-                f"Use GbgSynth.list_areas() to see available areas."
-            )
+            raise AreaNotFoundError(area_identifier)
         
         info = registry[code]
         api_value = self._get_area_api_value(code)

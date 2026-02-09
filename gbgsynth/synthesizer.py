@@ -1,8 +1,14 @@
 """
-Population synthesis engine implementing the greedy matching algorithm.
+Population synthesis engine using top-down constrained matching.
 
 This module contains the core logic for generating synthetic individuals
 and households based on census marginals.
+
+The algorithm:
+1. Create exact household containers from census size distribution
+2. Generate individuals from age/sex/role marginals
+3. Use constrained assignment to place individuals into households
+4. Ensure structural constraints (couples together, children with parents)
 """
 
 import random
@@ -19,36 +25,26 @@ logger = logging.getLogger(__name__)
 
 class PopulationSynthesizer:
     """
-    Implements greedy matching algorithm for synthetic population generation.
+    Population synthesizer using top-down constrained matching.
 
     The algorithm proceeds in phases:
-    1. Create empty households based on size/type statistics
-    2. Generate individual pool from demographic statistics
+    1. Create exact household containers from census size distribution
+    2. Generate individuals from age/sex/role marginals
     3. Form couples in multi-person households
-    4. Assign children to couple/single-parent households
-    5. Fill single-person households
-    6. Assign socioeconomic attributes
+    4. Assign children to family households
+    5. Fill remaining slots and handle overflow
+    6. Assign socioeconomic attributes (income, cars)
     """
 
-    def __init__(self, config: Optional[Config] = None, use_ipf: bool = False, 
-                 use_constrained_ipf: bool = False, use_topdown: bool = True):
+    def __init__(self, config: Optional[Config] = None):
         """
         Initialize the synthesizer.
 
         Args:
             config: Configuration object (will create default if None)
-            use_ipf: If True, use IPF for better marginal fitting
-            use_constrained_ipf: If True, use constrained IPF that generates
-                                 valid household compositions directly
-            use_topdown: If True, use top-down constrained synthesis that
-                        anchors exact household containers first, then fills
-                        with individuals. Best balance of structure + demographics.
         """
         self.config = config or Config()
         self.constraints = self.config.constraints
-        self.use_ipf = use_ipf
-        self.use_constrained_ipf = use_constrained_ipf
-        self.use_topdown = use_topdown
 
         # Synthesis state
         self.agents: List[Agent] = []
@@ -56,8 +52,8 @@ class PopulationSynthesizer:
         self.next_agent_id = 1
         self.next_household_id = 1
         
-        # IPF results (if used)
-        self.ipf_stats: Dict = {}
+        # Synthesis statistics
+        self.stats: Dict = {}
 
     def synthesize(
         self,
@@ -69,7 +65,7 @@ class PopulationSynthesizer:
         household_position_data: Optional[pd.DataFrame] = None
     ) -> Tuple[List[Agent], List[Household]]:
         """
-        Main synthesis method coordinating all phases.
+        Generate synthetic population from census marginals.
 
         Args:
             population_data: DataFrame with age/sex/hh_role counts
@@ -77,8 +73,7 @@ class PopulationSynthesizer:
             income_data: Optional DataFrame with income distribution
             car_data: Optional DataFrame with car ownership
             buildings: Optional DataFrame/GeoDataFrame with building footprints
-                      for spatial linking
-            household_position_data: Optional DataFrame with detailed household 
+            household_position_data: Optional DataFrame with detailed household
                       positions (including child role) by age/sex
 
         Returns:
@@ -90,53 +85,27 @@ class PopulationSynthesizer:
         self._household_position_data = household_position_data
         if household_position_data is not None:
             self._build_role_probability_table(household_position_data)
-            logger.info("Built role probability table from household position data")
+            logger.debug("Built role probability table from household position data")
 
-        if self.use_topdown:
-            # Top-down constrained synthesis: anchor households first, then fill
-            logger.info("Using top-down constrained synthesis")
-            self._synthesize_topdown(population_data, household_data, car_data)
-        elif self.use_constrained_ipf:
-            # Use constrained IPF that generates complete valid households
-            logger.info("Using constrained IPF synthesis")
-            self._synthesize_with_constrained_ipf(population_data, household_data, car_data)
-        elif self.use_ipf:
-            # Use IPF-based synthesis for better marginal fitting
-            logger.info("Using IPF-based synthesis")
-            self._synthesize_with_ipf(population_data, household_data, car_data)
-        else:
-            # Original greedy matching approach
-            logger.info("Using greedy matching synthesis")
-            
-            # Phase 1: Create households
-            self._create_households(household_data, car_data)
-            logger.info(f"Created {len(self.households)} households")
-
-            # Phase 2: Generate individual pool
-            individual_pool = self._generate_individual_pool(population_data)
-            logger.info(f"Generated pool of {len(individual_pool)} individuals")
-
-            # Phase 3: Greedy matching
-            self._match_individuals_to_households(individual_pool)
+        # Top-down constrained synthesis: anchor households first, then fill
+        self._synthesize_topdown(population_data, household_data, car_data)
         
-        logger.info(f"Matched {len(self.agents)} individuals to households")
+        logger.info(f"Matched {len(self.agents)} individuals to {len(self.households)} households")
 
-        # Phase 4: Assign socioeconomic attributes
+        # Assign socioeconomic attributes
         if income_data is not None:
             self._assign_income(income_data)
 
-        # Phase 5: Assign housing types (Hustyp) based on household size distribution
+        # Assign housing types (Hustyp) based on household size distribution
         self.assign_housing_types(household_data)
-        logger.info("Assigned housing types to households")
 
-        # Phase 6: Assign cars using propensity model with exact target
+        # Assign cars using propensity model with exact target
         self._assign_cars_propensity(car_data)
-        logger.info("Assigned cars to households using propensity model")
 
-        # Phase 7: Link to building footprints (if provided)
+        # Link to building footprints (if provided)
         if buildings is not None:
             self.link_to_buildings(buildings)
-            logger.info("Linked households to building footprints")
+            logger.debug("Linked households to building footprints")
 
         # Validation
         self._validate_synthesis()
@@ -577,7 +546,7 @@ class PopulationSynthesizer:
             logger.warning("Top-down synthesis complete: no capacity (area may have zero population)")
         
         # Store stats
-        self.ipf_stats = {
+        self.stats = {
             'method': 'topdown',
             'households_created': len(self.households),
             'individuals_placed': len(self.agents),
