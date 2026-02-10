@@ -1321,6 +1321,10 @@ class GbgArea:
                 'error_pct': round(error_pct, 1)
             })
         
+        # Sort by numeric lower bound so output is in natural age order
+        comparison.sort(key=lambda r: parse_age_range(r['category'])[0]
+                        if parse_age_range(r['category']) else 999)
+        
         return {'name': 'Age Distribution', 'comparison': comparison}
     
     def _compare_household_size_distribution(self) -> dict:

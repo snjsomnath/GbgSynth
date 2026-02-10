@@ -101,27 +101,57 @@ def plot_age_distribution(
     age_labels = ['0-5', '6-15', '16-18', '19-24', '25-34', '35-44', 
                   '45-54', '55-64', '65-74', '75-84', '85+']
     
-    # Plot synthesized distribution
-    ax.hist(ages, bins=age_bins, alpha=0.7, label='Synthesized', 
-            color='steelblue', edgecolor='white')
+    # Bin synthesized ages into census categories (equal-width bars)
+    import numpy as np
+    synth_counts, _ = np.histogram(ages, bins=age_bins)
+    
+    x = np.arange(len(age_labels))
+    bar_width = 0.4
     
     # Overlay marginals if available and requested
+    census_counts = None
     if show_marginals and area._marginals.get('population') is not None:
         comparison = area._compare_age_distribution()
         if comparison and 'comparison' in comparison:
-            x_positions = []
-            y_values = []
-            for i, row in enumerate(comparison['comparison']):
-                x_positions.append(i)
-                y_values.append(row['actual'])
+            import re
             
-            # Plot as line overlay
-            bin_centers = [(age_bins[i] + age_bins[i+1])/2 for i in range(len(age_bins)-1)]
-            if len(y_values) == len(bin_centers):
-                ax.plot(bin_centers, y_values, 'ro-', linewidth=2, 
-                       markersize=8, label='Census Target')
+            # Build a mapping from category label to census count
+            census_by_label = {}
+            for row in comparison['comparison']:
+                census_by_label[row['category']] = row['actual']
+            
+            # Map each bin to the matching census category
+            census_counts = []
+            for i in range(len(age_bins) - 1):
+                lo, hi = age_bins[i], age_bins[i+1] - 1  # inclusive range
+                matched = False
+                for label, count in census_by_label.items():
+                    m = re.match(r'(\d+)-(\d+)\s*år', str(label))
+                    if m and int(m.group(1)) == lo and int(m.group(2)) == hi:
+                        census_counts.append(count)
+                        matched = True
+                        break
+                    # Open-ended "85- år"
+                    m2 = re.match(r'(\d+)[-+]\s*år', str(label))
+                    if m2 and not re.match(r'(\d+)-(\d+)', str(label)) and int(m2.group(1)) == lo:
+                        census_counts.append(count)
+                        matched = True
+                        break
+                if not matched:
+                    census_counts.append(0)
     
-    ax.set_xlabel('Age')
+    if census_counts is not None:
+        ax.bar(x - bar_width/2, synth_counts, bar_width, label='Synthesized',
+               color='steelblue', alpha=0.8, edgecolor='white')
+        ax.bar(x + bar_width/2, census_counts, bar_width, label='Census Target',
+               color='indianred', alpha=0.8, edgecolor='white')
+    else:
+        ax.bar(x, synth_counts, 0.7, label='Synthesized',
+               color='steelblue', alpha=0.8, edgecolor='white')
+    
+    ax.set_xticks(x)
+    ax.set_xticklabels(age_labels, rotation=45, ha='right')
+    ax.set_xlabel('Age Group')
     ax.set_ylabel('Count')
     ax.set_title(title or f'Age Distribution: {area.area_name}')
     ax.legend()

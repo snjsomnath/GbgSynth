@@ -31,6 +31,7 @@ Usage:
 """
 
 import json
+import math
 import random
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -82,7 +83,7 @@ class HeatingConfig:
     def sample_apartment(self, rng: random.Random) -> str:
         """Sample heating system for an apartment."""
         return self._sample(rng, [
-            (self.apartment_district, "DISTRICT"),
+            (self.apartment_district, "DISTRICT_HEATING"),
             (self.apartment_heat_pump, "HEAT_PUMP"),
             (self.apartment_electric, "DIRECT_ELECTRIC"),
         ])
@@ -90,11 +91,11 @@ class HeatingConfig:
     def sample_villa(self, rng: random.Random) -> str:
         """Sample heating system for a villa."""
         return self._sample(rng, [
-            (self.villa_district, "DISTRICT"),
+            (self.villa_district, "DISTRICT_HEATING"),
             (self.villa_heat_pump, "HEAT_PUMP"),
             (self.villa_electric, "DIRECT_ELECTRIC"),
             (self.villa_wood, "WOOD_PELLET"),
-            (self.villa_gas, "GAS"),
+            (self.villa_gas, "DIRECT_ELECTRIC"),  # No gas in schema → resistive fallback
         ])
     
     def _sample(self, rng: random.Random, options: List[tuple]) -> str:
@@ -287,6 +288,147 @@ class BatteryConfig:
 
 
 @dataclass
+class BuildingEnvelopeConfig:
+    """
+    Building envelope and construction era configuration.
+    
+    GbgSynth does not have year-of-construction or window data.
+    All envelope parameters are therefore **assumptions**, not measurements:
+    
+    - **Construction era** is sampled probabilistically from the Swedish
+      housing stock age distribution (SCB / Energimyndigheten statistics).
+    - **Window area** is estimated from a configurable window-to-floor-area
+      ratio (no window data exists in the building footprints).
+    - **Wall / roof / floor geometry** is derived from typological rules
+      (e.g. "2-storey square-plan villa") applied to the known floor area.
+      GbgSynth has LiDAR building heights in the footprint GeoDataFrame,
+      but these are not yet propagated to the Dwelling model.
+    - **Storey heights** are configurable assumptions (villa vs apartment
+      may differ).
+    
+    These assumptions are aligned with the defaults in SweLoadSim's
+    ``create_swedish_villa`` / ``create_swedish_apartment`` factories so
+    that the 5R1C model receives consistent inputs.
+    
+    Attributes:
+        era_probabilities_villa: P(era | villa) from Swedish stock stats
+        era_probabilities_apartment: P(era | apartment) from Swedish stock stats
+        window_to_floor_ratio_villa: Assumed total window area ÷ heated floor area for villas
+        window_to_floor_ratio_apartment: Assumed total window area ÷ heated floor area for apartments
+        storey_height_villa_m: Assumed floor-to-floor height for villas [m]
+        storey_height_apartment_m: Assumed floor-to-floor (ceiling) height for apartments [m]
+        u_values: U-value lookup by era and building type [W/(m²·K)]
+    """
+    
+    # Swedish housing stock age distribution (SCB, Energimyndigheten)
+    # Villa: ~25% pre-1960, ~30% miljonprogrammet, ~20% 76-90, ~15% 91-10, ~10% post-2010
+    era_probabilities_villa: Dict[str, float] = field(default_factory=lambda: {
+        "pre_1960": 0.25,
+        "1960_1975": 0.30,
+        "1976_1990": 0.20,
+        "1991_2010": 0.15,
+        "post_2010": 0.10,
+    })
+    
+    # Apartments: ~15% pre-1960, ~35% miljonprogrammet, ~20% 76-90, ~20% 91-10, ~10% post-2010
+    era_probabilities_apartment: Dict[str, float] = field(default_factory=lambda: {
+        "pre_1960": 0.15,
+        "1960_1975": 0.35,
+        "1976_1990": 0.20,
+        "1991_2010": 0.20,
+        "post_2010": 0.10,
+    })
+    
+    # ASSUMPTION: Window-to-floor-area ratio.
+    # There is NO window data in GbgSynth — these are design rule-of-thumb
+    # values consistent with SweLoadSim's 5R1C factory functions.
+    # Swedish BBR guideline ~10-15% of floor area for daylighting.
+    window_to_floor_ratio_villa: float = 0.15       # 15% — typical Swedish villa
+    window_to_floor_ratio_apartment: float = 0.12   # 12% — mid-block apartment, fewer external walls
+    
+    # ASSUMPTION: Storey heights [m].
+    # Villas: ~2.5 m floor-to-floor (matches SweLoadSim create_swedish_villa).
+    # Apartments: ~2.6 m clear height (matches SweLoadSim create_swedish_apartment).
+    storey_height_villa_m: float = 2.5
+    storey_height_apartment_m: float = 2.6
+    
+    # U-value tables by era [W/(m²·K)] — aligned with SweLoadSim defaults
+    u_values: Dict[str, Dict[str, Dict[str, float]]] = field(default_factory=lambda: {
+        "pre_1960": {
+            "villa": {"u_walls": 0.60, "u_roof": 0.40, "u_floor": 0.40, "u_windows": 2.80},
+            "apartment": {"u_walls": 0.50, "u_roof": 0.35, "u_floor": 0.35, "u_windows": 2.50},
+        },
+        "1960_1975": {
+            "villa": {"u_walls": 0.40, "u_roof": 0.25, "u_floor": 0.30, "u_windows": 2.50},
+            "apartment": {"u_walls": 0.35, "u_roof": 0.20, "u_floor": 0.25, "u_windows": 2.20},
+        },
+        "1976_1990": {
+            "villa": {"u_walls": 0.25, "u_roof": 0.15, "u_floor": 0.25, "u_windows": 1.80},
+            "apartment": {"u_walls": 0.22, "u_roof": 0.12, "u_floor": 0.20, "u_windows": 1.60},
+        },
+        "1991_2010": {
+            "villa": {"u_walls": 0.20, "u_roof": 0.12, "u_floor": 0.20, "u_windows": 1.40},
+            "apartment": {"u_walls": 0.18, "u_roof": 0.10, "u_floor": 0.18, "u_windows": 1.20},
+        },
+        "post_2010": {
+            "villa": {"u_walls": 0.15, "u_roof": 0.10, "u_floor": 0.15, "u_windows": 1.00},
+            "apartment": {"u_walls": 0.12, "u_roof": 0.08, "u_floor": 0.12, "u_windows": 0.90},
+        },
+    })
+    
+    def sample_era(self, rng: random.Random, housing_type: str) -> str:
+        """
+        Sample a building construction era from stock distribution.
+        
+        Args:
+            rng: Random number generator
+            housing_type: "VILLA" or "APARTMENT"
+            
+        Returns:
+            Era string, e.g. "1960_1975"
+        """
+        probs = (self.era_probabilities_villa if housing_type == "VILLA" 
+                 else self.era_probabilities_apartment)
+        r = rng.random()
+        cumulative = 0.0
+        for era, prob in probs.items():
+            cumulative += prob
+            if r < cumulative:
+                return era
+        return list(probs.keys())[-1]
+    
+    def get_u_values(self, era: str, housing_type: str) -> Dict[str, float]:
+        """
+        Get U-values for a given era and housing type.
+        
+        Args:
+            era: Construction era string
+            housing_type: "VILLA" or "APARTMENT"
+            
+        Returns:
+            Dict with u_walls, u_roof, u_floor, u_windows
+        """
+        btype = "villa" if housing_type == "VILLA" else "apartment"
+        return self.u_values.get(era, self.u_values["1976_1990"]).get(
+            btype, self.u_values["1976_1990"]["apartment"]
+        )
+    
+    def get_ventilation_params(self, era: str) -> Dict[str, float]:
+        """
+        Get ventilation parameters by era.
+        
+        Returns:
+            Dict with ach_infiltration, ach_ventilation, heat_recovery_efficiency
+        """
+        if era in ("pre_1960", "1960_1975"):
+            return {"ach_infiltration": 0.3, "ach_ventilation": 0.5, "heat_recovery_efficiency": 0.0}
+        elif era == "1976_1990":
+            return {"ach_infiltration": 0.15, "ach_ventilation": 0.5, "heat_recovery_efficiency": 0.0}
+        else:  # 1991_2010, post_2010
+            return {"ach_infiltration": 0.15, "ach_ventilation": 0.5, "heat_recovery_efficiency": 0.7}
+
+
+@dataclass
 class SweLoadSimConfig:
     """
     Complete configuration for SweLoadSim export.
@@ -299,6 +441,7 @@ class SweLoadSimConfig:
         ev: Electric vehicle ownership config
         solar: Solar PV system config
         battery: Battery storage config
+        envelope: Building envelope and construction era config
         summerhouse_by_income: P(summerhouse) by income decile
         seed: Random seed for reproducibility (None = random)
     
@@ -318,6 +461,7 @@ class SweLoadSimConfig:
     ev: EVConfig = field(default_factory=EVConfig)
     solar: SolarConfig = field(default_factory=SolarConfig)
     battery: BatteryConfig = field(default_factory=BatteryConfig)
+    envelope: BuildingEnvelopeConfig = field(default_factory=BuildingEnvelopeConfig)
     
     summerhouse_by_income: Dict[int, float] = field(default_factory=lambda: {
         1: 0.02, 2: 0.03, 3: 0.05, 4: 0.07, 5: 0.10,
@@ -508,15 +652,15 @@ class SweLoadSimExporter(BaseExporter):
         "other": "APARTMENT",
     }
     
-    # Employment status mapping
+    # Employment status mapping (must match schema employment_status enum)
     STATUS_MAP = {
         "employed": "FULL_TIME",
         "part_time": "PART_TIME",
         "student": "STUDENT",
         "retired": "RETIRED",
-        "child": "CHILD",
-        "unemployed": "HOME",
-        "parental_leave": "HOME",
+        "child": "STUDENT",           # Children → STUDENT (schema: no CHILD)
+        "unemployed": "FULL_TIME",     # No HOME in schema → FULL_TIME
+        "parental_leave": "FULL_TIME", # No HOME in schema → FULL_TIME
         None: "FULL_TIME",
     }
     
@@ -548,6 +692,7 @@ class SweLoadSimExporter(BaseExporter):
         self._rng = random.Random(self.config.seed)
         
         data = {
+            "schema_version": "1.0.0",
             "metadata": self._build_metadata(area),
             "export_config": self._serialize_config(),
             "households": [
@@ -619,10 +764,25 @@ class SweLoadSimExporter(BaseExporter):
                 "probability_no_solar": self.config.battery.probability_no_solar,
                 "size_kwh_mean": self.config.battery.size_kwh_mean,
             },
+            "envelope": {
+                "era_probabilities_villa": self.config.envelope.era_probabilities_villa,
+                "era_probabilities_apartment": self.config.envelope.era_probabilities_apartment,
+                "window_to_floor_ratio_villa": self.config.envelope.window_to_floor_ratio_villa,
+                "window_to_floor_ratio_apartment": self.config.envelope.window_to_floor_ratio_apartment,
+                "storey_height_villa_m": self.config.envelope.storey_height_villa_m,
+                "storey_height_apartment_m": self.config.envelope.storey_height_apartment_m,
+            },
         }
     
     def _convert_household(self, hh: "Household") -> Dict[str, Any]:
-        """Convert a GbgSynth Household to SweLoadSim format."""
+        """Convert a GbgSynth Household to SweLoadSim format.
+        
+        Includes building envelope parameters for the 5R1C heating model:
+        - Construction era (sampled from stock distribution)
+        - U-values for walls, roof, floor, windows
+        - Building geometry (wall area, roof area, window area)
+        - Ventilation parameters
+        """
         # Determine housing type
         house_type = hh.house_type or "apartment"
         housing_type = self.HOUSING_MAP.get(house_type, "APARTMENT")
@@ -666,6 +826,31 @@ class SweLoadSimExporter(BaseExporter):
         # Determine luxury level
         luxury_level = "HIGH" if income_decile >= 7 else "STANDARD"
         
+        # =================================================================
+        # BUILDING ENVELOPE — for SweLoadSim 5R1C heating model
+        # =================================================================
+        envelope_cfg = self.config.envelope
+        
+        # Sample construction era from stock distribution
+        building_era = envelope_cfg.sample_era(self._rng, housing_type)
+        
+        # Get U-values for this era and housing type
+        u_values = envelope_cfg.get_u_values(building_era, housing_type)
+        
+        # Get ventilation parameters for this era
+        ventilation = envelope_cfg.get_ventilation_params(building_era)
+        
+        # Estimate building geometry from typological assumptions
+        building_geometry = self._derive_geometry(
+            hh, housing_type, floor_area, envelope_cfg
+        )
+        
+        # Which window-to-floor ratio was assumed (for transparency)
+        assumed_wfr = (
+            envelope_cfg.window_to_floor_ratio_villa if housing_type == "VILLA"
+            else envelope_cfg.window_to_floor_ratio_apartment
+        )
+        
         return {
             "household_id": hh.household_id,
             "area_m2": round(floor_area, 1),
@@ -678,6 +863,14 @@ class SweLoadSimExporter(BaseExporter):
             "battery_kwh": battery_kwh,
             "num_cars": hh.cars,
             "income_decile": income_decile,
+            # Building envelope (all assumptions — no measured window or era data)
+            "building_era": building_era,
+            "envelope": {
+                **u_values,
+                **building_geometry,
+                "window_to_floor_ratio": assumed_wfr,
+                **ventilation,
+            },
             "members": [
                 self._convert_agent(agent) 
                 for agent in hh.members
@@ -709,6 +902,77 @@ class SweLoadSimExporter(BaseExporter):
         # Default to median
         return 5
     
+    def _derive_geometry(
+        self, hh: "Household", housing_type: str, 
+        floor_area: float, envelope_cfg: "BuildingEnvelopeConfig",
+    ) -> Dict[str, float]:
+        """
+        Estimate building geometry from typological assumptions.
+        
+        ALL values here are assumptions, not measurements:
+        
+        - **Villa**: Assumed 2-storey, square plan, pitched roof (×1.2).
+          Wall area = 4 × side × height.  Matches SweLoadSim's
+          ``create_swedish_villa`` factory.
+        - **Apartment**: Assumed mid-block unit with 2 external walls.
+          Roof/floor transmission reduced to 20% of floor area (thermal
+          bridges only).  Matches ``create_swedish_apartment``.
+        - **Window area**: floor_area × assumed window-to-floor ratio
+          (no window data exists in GbgSynth).
+        - **Storey heights**: from ``BuildingEnvelopeConfig``
+          (villa 2.5 m, apartment 2.6 m by default).
+        
+        Future improvement: propagate the LiDAR building height and
+        footprint area from the GbgSynth GeoDataFrame onto the Dwelling
+        model, then use real values here instead of the square-plan
+        assumption.
+        
+        Args:
+            hh: GbgSynth Household (dwelling link currently unused)
+            housing_type: "VILLA" or "APARTMENT"
+            floor_area: Heated floor area [m²]
+            envelope_cfg: Envelope configuration with storey heights and
+                          window-to-floor ratios
+            
+        Returns:
+            Dict with wall_area_m2, roof_area_m2, floor_area_ground_m2,
+            window_area_m2, building_height_m, num_stories
+        """
+        if housing_type == "VILLA":
+            h_storey = envelope_cfg.storey_height_villa_m
+            stories = 2
+            footprint = floor_area / stories
+            side_length = math.sqrt(footprint)
+            height = h_storey * stories
+            
+            return {
+                "wall_area_m2": round(4 * side_length * height, 1),
+                "roof_area_m2": round(footprint * 1.2, 1),  # Pitched roof factor
+                "floor_area_ground_m2": round(footprint, 1),
+                "window_area_m2": round(
+                    floor_area * envelope_cfg.window_to_floor_ratio_villa, 1
+                ),
+                "building_height_m": round(height, 1),
+                "num_stories": stories,
+            }
+        else:
+            # Apartment: mid-block unit with 2 external walls
+            h_storey = envelope_cfg.storey_height_apartment_m
+            width = math.sqrt(floor_area)
+            external_wall_area = 2 * width * h_storey
+            effective_roof_floor = floor_area * 0.2  # Thermal bridge / edge losses
+            
+            return {
+                "wall_area_m2": round(external_wall_area, 1),
+                "roof_area_m2": round(effective_roof_floor, 1),
+                "floor_area_ground_m2": round(effective_roof_floor, 1),
+                "window_area_m2": round(
+                    floor_area * envelope_cfg.window_to_floor_ratio_apartment, 1
+                ),
+                "building_height_m": round(h_storey, 1),
+                "num_stories": 1,  # Single-unit perspective
+            }
+    
     def _calculate_summary(self, households: List[Dict]) -> Dict[str, Any]:
         """Calculate summary statistics for export."""
         n = len(households)
@@ -733,6 +997,12 @@ class SweLoadSimExporter(BaseExporter):
         battery_count = sum(1 for hh in households if hh["battery_kwh"])
         summerhouse_count = sum(1 for hh in households if hh["has_summerhouse"])
         
+        # Building era distribution
+        era_counts: Dict[str, int] = {}
+        for hh in households:
+            era = hh.get("building_era", "unknown")
+            era_counts[era] = era_counts.get(era, 0) + 1
+        
         # Solar and battery sizing
         solar_sizes = [hh["solar_pv_kw"] for hh in households if hh["solar_pv_kw"]]
         battery_sizes = [hh["battery_kwh"] for hh in households if hh["battery_kwh"]]
@@ -741,6 +1011,7 @@ class SweLoadSimExporter(BaseExporter):
             "total_households": n,
             "heating_distribution": {k: round(v/n*100, 1) for k, v in heating_counts.items()},
             "housing_distribution": {k: round(v/n*100, 1) for k, v in housing_counts.items()},
+            "era_distribution": {k: round(v/n*100, 1) for k, v in era_counts.items()},
             "ev_adoption_rate": round(ev_count / n * 100, 1),
             "solar_adoption_rate": round(solar_count / n * 100, 1),
             "battery_adoption_rate": round(battery_count / n * 100, 1),
@@ -771,6 +1042,22 @@ class SweLoadSimExporter(BaseExporter):
                 "has_summerhouse": "Whether household has a summer house",
                 "solar_pv_kw": "Solar PV system size in kW (null if none)",
                 "battery_kwh": "Battery storage capacity in kWh (null if none)",
+                "building_era": "Construction era: pre_1960, 1960_1975, 1976_1990, 1991_2010, post_2010",
+                "envelope": {
+                    "u_walls": "Wall U-value [W/(m²·K)]",
+                    "u_roof": "Roof U-value [W/(m²·K)]",
+                    "u_floor": "Floor U-value [W/(m²·K)]",
+                    "u_windows": "Window U-value [W/(m²·K)]",
+                    "wall_area_m2": "External wall area [m²]",
+                    "roof_area_m2": "Roof area [m²]",
+                    "floor_area_ground_m2": "Ground-contact floor area [m²]",
+                    "window_area_m2": "Total window area [m²]",
+                    "window_to_floor_ratio": "Assumed window area ÷ floor area (no window data exists)",
+                    "building_height_m": "Building height [m]",
+                    "ach_infiltration": "Infiltration air changes [1/h]",
+                    "ach_ventilation": "Mechanical ventilation [1/h]",
+                    "heat_recovery_efficiency": "Heat recovery efficiency (0-1)",
+                },
                 "members": "List of household members with age_group and status",
             },
         }

@@ -1,6 +1,6 @@
 # GbgSynth - Synthetic Population Generator for Gothenburg
 
-![Tests](https://img.shields.io/badge/tests-316%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-348%20passed-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Areas](https://img.shields.io/badge/areas-96%20neighbourhoods-orange)
@@ -128,6 +128,92 @@ for name in GbgSynth.list_areas():
     except Exception as e:
         print(f"Failed {name}: {e}")
 ```
+
+## Examples
+
+The `examples/` directory contains 14 numbered scripts progressing from basics to advanced usage:
+
+| # | Script | Description |
+|---|--------|-------------|
+| 01 | `01_quickstart.py` | Synthesize one area and inspect the population |
+| 02 | `02_discover_areas.py` | Browse all 96 neighbourhoods and look up codes |
+| 03 | `03_explore_population.py` | Drill into individuals, households, and dwellings |
+| 04 | `04_save_csv.py` | Export to CSV and DataFrames |
+| 05 | `05_car_ownership.py` | Analyse car ownership by household type |
+| 06 | `06_compare_marginals.py` | Compare synthesized population to census targets |
+| 07 | `07_sanity_checks.py` | Run structural sanity checks on households |
+| 08 | `08_validate.py` | Full validation with RMSE, correlation, error grades |
+| 09 | `09_batch_processing.py` | Synthesize and save multiple areas in a loop |
+| 10 | `10_reproducibility.py` | Deterministic synthesis with random seeds |
+| 11 | `11_visualize.py` | Generate all 9 plot types to `plots/` |
+| 12 | `12_prognosis_scaling.py` | Scale population to a future year (2025–2032) |
+| 13 | `13_export_sweloadsim.py` | Export for SweLoadSim electricity simulation |
+| 14 | `14_direct_api.py` | Query the PxWeb API directly |
+
+Run any example:
+
+```bash
+python examples/01_quickstart.py
+```
+
+## Exporting to SweLoadSim
+
+GbgSynth can export synthetic populations for use with
+[SweLoadSim](https://github.com/yourusername/SweLoadSim), a household
+electricity load simulator. The export uses a versioned JSON interchange schema.
+
+### Export a Population
+
+```python
+from gbgsynth import GbgSynth
+from gbgsynth.exporters.sweloadsim import SweLoadSimExporter, SweLoadSimConfig
+
+city = GbgSynth(year=2023)
+haga = city.synthesize("Haga")
+
+# Export with default configuration
+exporter = SweLoadSimExporter(SweLoadSimConfig())
+exporter.export(haga, "haga_sweloadsim.json")
+```
+
+### Import in SweLoadSim
+
+```python
+# In a SweLoadSim project:
+from src.facade import load_population, simulate
+
+pop = load_population("haga_sweloadsim.json")
+print(pop)  # Population(n=2040, source=GbgSynth, area=Haga)
+
+result = simulate(pop, start="2024-01-15", days=7)
+result.print_summary()
+```
+
+### Configuration Presets
+
+```python
+from gbgsynth.exporters.sweloadsim import SweLoadSimConfig
+
+# Use built-in presets
+cfg = SweLoadSimConfig.typical_swedish()  # stock-average Swedish mix
+cfg = SweLoadSimConfig.heat_pump_villa()  # heat pump villas only
+
+# Or customise individual parameters
+cfg = SweLoadSimConfig(ev_adoption_rate=0.3, solar_adoption_rate=0.1)
+```
+
+### Interchange Schema
+
+The JSON export includes a `schema_version` field (currently `"1.0.0"`) and
+follows the interchange schema at `schemas/gbgsynth_interchange_v1.schema.json`.
+Canonical enum values:
+
+| Field | Values |
+|-------|--------|
+| `housing_type` | `VILLA`, `APARTMENT` |
+| `heating_type` | `DISTRICT_HEATING`, `HEAT_PUMP`, `DIRECT_ELECTRIC`, `WOOD_PELLET` |
+| `building_era` | `pre_1960`, `1960_1975`, `1976_1990`, `1991_2010`, `post_2010` |
+| `employment_status` | `FULL_TIME`, `PART_TIME`, `STUDENT`, `RETIRED` |
 
 ## Architecture
 
@@ -264,13 +350,13 @@ GbgSynth has been validated across all 96 neighbourhoods of Gothenburg. The synt
 ### Example Validation Plots (Haga, Area 107)
 
 <p align="center">
-  <img src="plots/107_Haga_scatter_comparison.png" width="400" alt="Scatter comparison showing census vs synthesized counts"/>
-  <img src="plots/107_Haga_population_pyramid.png" width="400" alt="Population pyramid comparison"/>
+  <img src="plots/scatter_comparison.png" width="400" alt="Scatter comparison showing census vs synthesized counts"/>
+  <img src="plots/population_pyramid.png" width="400" alt="Population pyramid comparison"/>
 </p>
 
 <p align="center">
-  <img src="plots/107_Haga_household_size.png" width="400" alt="Household size distribution"/>
-  <img src="plots/107_Haga_error_analysis.png" width="400" alt="Error analysis by category"/>
+  <img src="plots/household_size.png" width="400" alt="Household size distribution"/>
+  <img src="plots/error_analysis.png" width="400" alt="Error analysis by category"/>
 </p>
 
 ### Running Validation
@@ -334,13 +420,7 @@ area.generate()  # Re-synthesize with scaled marginals
 
 ### Demographic Dashboard
 
-The 8-panel dashboard below shows the demographic impact of scaling Haga (area 107) from 2024 to 2032. The prognosis projects a **−2.1% population decline** (3826 → 3744), with notable shifts in age structure: children decrease from 850 to 771 while singles increase from 1007 to 1025.
-
-<p align="center">
-  <img src="plots/107_prognosis_2032.png" width="900" alt="8-panel demographic dashboard showing prognosis scaling for Haga 2024→2032"/>
-</p>
-
-Panels: **(a)** Age group scale factors, **(b)** Population pyramids (base vs. projected), **(c)** Household size distribution, **(d)** Household type composition, **(e)** Sex ratio changes, **(f)** Key demographic indicators, **(g)** Population trajectory 2025–2032, **(h)** Age-bin × year heatmap of scale factors.
+Scaling Haga (area 107) from 2024 to 2032, the prognosis projects population changes with notable shifts in age structure. Run `examples/12_prognosis_scaling.py` to see the demographic breakdown.
 
 ### How It Works
 
@@ -426,7 +506,7 @@ Contributions welcome! Key areas for improvement:
 - Additional validation constraints
 - Spatial allocation algorithms
 - Including future year prognosis
-- Connecting to SweLoadSim
+- Additional exporters (e.g. MATSim, OpenStreetMap)
 
 ## License
 

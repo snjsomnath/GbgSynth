@@ -157,6 +157,59 @@ class TestPlotAgeDistribution:
         with pytest.raises(DataNotGeneratedError):
             plotting.plot_age_distribution(mock_area)
 
+    def test_census_overlay_correct_order(self, mock_area):
+        """Regression test: census bars must match bins by label, not position.
+
+        The census data can come back in alphabetical order, which puts
+        '6-15 år' after '55-64 år'. The plot must still place each bar
+        at the correct age-group position.
+        """
+        import matplotlib.pyplot as plt
+
+        # Provide comparison in ALPHABETICAL order (the real bug scenario)
+        mock_area._compare_age_distribution = Mock(return_value={
+            'name': 'Age Distribution',
+            'comparison': [
+                # alphabetical: 0-5, 16-18, 19-24, 25-34, 35-44, 45-54, 55-64, 6-15, 65-74, 75-84, 85-
+                {'category': '0-5 år',   'actual': 139, 'synth': 139, 'diff': 0, 'error_pct': 0},
+                {'category': '16-18 år', 'actual': 130, 'synth': 130, 'diff': 0, 'error_pct': 0},
+                {'category': '19-24 år', 'actual': 215, 'synth': 214, 'diff':-1, 'error_pct':-0.5},
+                {'category': '25-34 år', 'actual': 304, 'synth': 303, 'diff':-1, 'error_pct':-0.3},
+                {'category': '35-44 år', 'actual': 454, 'synth': 454, 'diff': 0, 'error_pct': 0},
+                {'category': '45-54 år', 'actual': 643, 'synth': 641, 'diff':-2, 'error_pct':-0.3},
+                {'category': '55-64 år', 'actual': 675, 'synth': 672, 'diff':-3, 'error_pct':-0.4},
+                {'category': '6-15 år',  'actual': 338, 'synth': 338, 'diff': 0, 'error_pct': 0},
+                {'category': '65-74 år', 'actual': 617, 'synth': 617, 'diff': 0, 'error_pct': 0},
+                {'category': '75-84 år', 'actual': 252, 'synth': 252, 'diff': 0, 'error_pct': 0},
+                {'category': '85- år',   'actual':  48, 'synth':  48, 'diff': 0, 'error_pct': 0},
+            ]
+        })
+
+        fig = plotting.plot_age_distribution(mock_area, show_marginals=True)
+        ax = fig.axes[0]
+
+        # With side-by-side bars, we should have two sets of bar containers
+        # (synthesized + census). Extract census bar heights by container.
+        containers = ax.containers
+        assert len(containers) == 2, "Should have 2 bar groups (synth + census)"
+        census_bars = containers[1]  # second group is census
+        census_heights = [b.get_height() for b in census_bars]
+
+        # age_labels order: 0-5, 6-15, 16-18, 19-24, 25-34, 35-44,
+        #                   45-54, 55-64, 65-74, 75-84, 85+
+        # Index 7 = "55-64" must be 675, NOT 338
+        assert census_heights[7] == 675, (
+            f"Census bar for '55-64' (index 7) should be 675, "
+            f"got {census_heights[7]} (likely 6-15 due to alphabetical sort)"
+        )
+
+        # Index 1 = "6-15" must be 338
+        assert census_heights[1] == 338, (
+            f"Census bar for '6-15' (index 1) should be 338, got {census_heights[1]}"
+        )
+
+        plt.close(fig)
+
 
 class TestPlotHouseholdSize:
     """Tests for plot_household_size function."""
