@@ -7,7 +7,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="gbgsynth",
-    version="0.3.0",
+    version="0.4.0",
     author="Sanjay Somanath",
     author_email="sanjay.somanath@chalmers.se",
     description="Synthetic population generator for Gothenburg using PxWeb API",
@@ -25,6 +25,7 @@ setup(
         "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
     ],
     python_requires=">=3.8",
     install_requires=[
@@ -39,6 +40,7 @@ setup(
     extras_require={
         "dev": [
             "pytest>=7.0.0",
+            "pytest-mock>=3.10.0",
             "black>=22.0.0",
             "flake8>=4.0.0",
         ],
