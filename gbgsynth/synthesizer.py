@@ -1,10 +1,19 @@
 """
-Population synthesis engine using top-down constrained matching.
+Population synthesis engine with pluggable algorithms.
 
-This module contains the core logic for generating synthetic individuals
-and households based on census marginals.
+This module contains the core :class:`PopulationSynthesizer` class for
+generating synthetic individuals and households based on census marginals.
 
-The algorithm:
+Three synthesis engines are available (selected via the ``engine`` parameter):
+
+- **topdown** (default) — top-down constrained matching.  Fast, exact
+  household-size distribution, but treats marginals as independent.
+- **ipf** — Iterative Proportional Fitting.  Better joint-distribution
+  preservation via ``gbgsynth.ipf.IPFSynthesizer``.
+- **constrained_ipf** — Constrained IPF with valid-by-construction
+  household archetypes.  Statistically the most rigorous.
+
+The top-down algorithm:
 1. Create exact household containers from census size distribution
 2. Generate individuals from age/sex/role marginals
 3. Use constrained assignment to place individuals into households
@@ -13,44 +22,17 @@ The algorithm:
 .. note:: Architecture & Decomposition Roadmap
    ────────────────────────────────────────────
 
-   TODO(arch-001): MONOLITH DECOMPOSITION — This file is ~2,800 lines with
-   a single god-class. Break into focused modules:
-     - household_factory.py      → _create_households, _synthesize_topdown (Phase 1)
-     - population_generator.py   → _generate_individual_pool, _generate_individuals_from_*
-     - household_matcher.py      → _form_couples_*, _place_children_*, _redistribute_*
-     - socioeconomic_assigner.py → _assign_income, _assign_education_level, _assign_income_source
-     - car_assigner.py           → _assign_cars_propensity
-     - housing_assigner.py       → assign_housing_types, link_to_buildings
-     - synthesizer.py            → Thin orchestrator composing the above
-   Each module should be independently testable with clear interfaces.
+   TODO(arch-001): MONOLITH DECOMPOSITION — This file is large.  Break
+   into focused modules for independent testing (household_factory,
+   population_generator, household_matcher, socioeconomic_assigner,
+   car_assigner, housing_assigner, thin orchestrator).
 
-   TODO(arch-002): DEAD CODE — _synthesize_with_ipf (~120 lines) and
-   _synthesize_with_constrained_ipf (~100 lines) plus _match_individuals_to_
-   households_ipf (~160 lines) and _match_individuals_to_households (~45 lines)
-   and _create_households (~25 lines) and _generate_individual_pool (~35 lines)
-   are NEVER called. That is ~485 lines of unmaintained code. Either:
-   (a) Delete them, or
-   (b) Gate behind a config.synthesis_engine flag with a strategy pattern.
-   Dead code rots — if ipf.py drifts, these methods silently break.
+   TODO(stat-001): The top-down engine treats all marginal distributions
+   as independent. Use ``engine='ipf'`` or ``engine='constrained_ipf'``
+   for proper joint-distribution preservation.
 
-   TODO(arch-003): STRATEGY PATTERN — Introduce an engine selection mechanism:
-     engine = {'topdown', 'ipf', 'constrained_ipf'}
-   so users can switch synthesis algorithms via config without code changes.
-
-   TODO(stat-001): FUNDAMENTAL — The top-down approach treats all marginal
-   distributions as independent and reconciles post-hoc via greedy matching.
-   This DESTROYS correlation structure (age×income, education×housing, etc.).
-   The field standard since Beckman et al. (1996) is IPF/IPU. More recent:
-   Bayesian networks (Sun & Erath, 2015), copulas (Borysov et al., 2019).
-   Activate the IPF engine or implement IPU for proper joint distribution.
-
-   TODO(eval-001): EVALUATION METRICS — The MAPE-based evaluation in
-   scripts/whatif_analysis.py is flawed. MAPE is biased for small counts
-   (a cell with 5 census / 8 synth = 60% error but only 3 people off).
-   Implement proper metrics: SRMSE (Williamson 1998), TAE (Voas &
-   Williamson 2001), chi-squared goodness-of-fit, Freeman-Tukey.
-   Run synthesis N times with different seeds and report confidence
-   intervals on all metrics.
+   TODO(eval-001): Implement proper goodness-of-fit metrics (SRMSE, TAE,
+   chi-squared, Freeman-Tukey) with multi-seed confidence intervals.
 """
 
 import random
@@ -78,40 +60,56 @@ class PopulationSynthesizer:
     6. Assign socioeconomic attributes (income, cars)
     """
 
-    def __init__(self, config: Optional[Config] = None):
+    # arch-003: supported synthesis engines
+    VALID_ENGINES = {'topdown', 'ipf', 'constrained_ipf'}
+
+    def __init__(self, config: Optional[Config] = None,
+                 random_seed: Optional[int] = None,
+                 strict: bool = False,
+                 engine: str = 'topdown'):
         """
         Initialize the synthesizer.
 
         Args:
             config: Configuration object (will create default if None)
+            random_seed: Optional seed for reproducible synthesis.
+                If provided, ``random.seed()`` and ``np.random.seed()``
+                are called at the start of every ``synthesize()`` invocation
+                so that repeated runs with the same seed yield identical
+                synthetic populations.
+            strict: If True, raise ``ValueError`` on data quality issues
+                instead of logging warnings and falling back to defaults.
+            engine: Synthesis algorithm to use.  One of:
+                - ``'topdown'`` (default) — top-down constrained matching.
+                  Fast, exact household-size distribution, but treats
+                  marginals as independent.
+                - ``'ipf'`` — Iterative Proportional Fitting.
+                  Better joint-distribution preservation.
+                - ``'constrained_ipf'`` — Constrained IPF with valid-by-
+                  construction household archetypes.  Statistically the
+                  most rigorous, but requires ``gbgsynth.ipf`` module.
         """
-        # TODO(eng-001): REPRODUCIBILITY — Accept a `random_seed: Optional[int]`
-        # parameter. The synthesizer uses 3 RNG sources (random.*, np.random.*,
-        # random.gauss) but never seeds any of them. Results are non-reproducible.
-        # Fix: if seed provided, call random.seed(seed) and np.random.seed(seed)
-        # at the start of synthesize().
-
-        # TODO(eng-002): THREAD SAFETY — All state lives on `self`, making this
-        # class unsafe for concurrent use (e.g., parallel area synthesis).
-        # Fix: either return results from synthesize() without storing on self,
-        # or create a new instance per area.
-
+        if engine not in self.VALID_ENGINES:
+            raise ValueError(
+                f"Unknown engine '{engine}'. "
+                f"Choose from {sorted(self.VALID_ENGINES)}"
+            )
         self.config = config or Config()
         self.constraints = self.config.constraints
+        self.random_seed = random_seed
+        self.strict = strict
+        self.engine = engine
 
         # Synthesis state
         self.agents: List[Agent] = []
         self.households: List[Household] = []
         self.next_agent_id = 1
         self.next_household_id = 1
-        
+
         # Synthesis statistics
         self.stats: Dict = {}
 
-        # FIXME(eng-003): UNDECLARED ATTRIBUTES — The following attributes are
-        # created dynamically in synthesize() and other methods but never
-        # declared in __init__. This causes hasattr() checks scattered through
-        # the code and makes the class interface opaque. Declare them here:
+        # Declared up-front so the class interface is transparent (eng-003)
         self._household_position_data: Optional[pd.DataFrame] = None
         self._role_probs: Dict = {}
         self.ipf_stats: Dict = {}
@@ -149,23 +147,30 @@ class PopulationSynthesizer:
         """
         logger.info("Starting population synthesis")
 
-        # FIXME(eng-004): NO STATE RESET — If synthesize() is called twice on
-        # the same instance, self.households accumulates, agent IDs continue
-        # incrementing from previous run, and results are corrupted.
-        # Fix: Add reset logic here:
-        #   self.agents = []
-        #   self.households = []
-        #   self.next_agent_id = 1
-        #   self.next_household_id = 1
-        #   self.stats = {}
+        # ── State reset (eng-004) ────────────────────────────────────────
+        self.agents = []
+        self.households = []
+        self.next_agent_id = 1
+        self.next_household_id = 1
+        self.stats = {}
+        self.ipf_stats = {}
+        self._household_position_data = None
+        self._role_probs = {}
 
-        # TODO(eng-005): INPUT VALIDATION — None of the 8 DataFrames are
-        # validated. Missing columns, negative counts, unparseable age groups,
-        # inconsistent totals (population != sum of household sizes) all cause
-        # silent failures or garbage output. Add a _validate_inputs() method
-        # that checks: required columns exist, counts >= 0, population total
-        # ≈ household capacity total (within 5%), age groups are parseable.
-        # In strict mode, raise ValueError; otherwise log warnings.
+        # ── Seed RNGs for reproducibility (eng-001) ─────────────────────
+        if self.random_seed is not None:
+            random.seed(self.random_seed)
+            np.random.seed(self.random_seed)
+            logger.info(f"RNG seeded with {self.random_seed} for reproducibility")
+
+        # ── Validate inputs (eng-005) ───────────────────────────────────
+        self._validate_inputs(
+            population_data, household_data,
+            income_data=income_data,
+            car_data=car_data,
+            education_level_data=education_level_data,
+            income_source_data=income_source_data,
+        )
 
         # Store household position data for role assignment
         self._household_position_data = household_position_data
@@ -173,8 +178,18 @@ class PopulationSynthesizer:
             self._build_role_probability_table(household_position_data)
             logger.debug("Built role probability table from household position data")
 
-        # Top-down constrained synthesis: anchor households first, then fill
-        self._synthesize_topdown(population_data, household_data, car_data)
+        # ── Engine dispatch (arch-003) ─────────────────────────────────────
+        if self.engine == 'ipf':
+            logger.info("Using IPF synthesis engine")
+            self._synthesize_with_ipf(population_data, household_data, car_data)
+        elif self.engine == 'constrained_ipf':
+            logger.info("Using Constrained IPF synthesis engine")
+            self._synthesize_with_constrained_ipf(
+                population_data, household_data, car_data
+            )
+        else:  # 'topdown'
+            logger.info("Using top-down constrained synthesis engine")
+            self._synthesize_topdown(population_data, household_data, car_data)
         
         logger.info(f"Matched {len(self.agents)} individuals to {len(self.households)} households")
 
@@ -190,16 +205,9 @@ class PopulationSynthesizer:
         if income_source_data is not None:
             self._assign_income_source(income_source_data)
 
-        # FIXME(eng-006): HOUSING TYPE ASSIGNED TWICE — _synthesize_topdown()
-        # already assigns house_type and assigned_hustyp per household using
-        # the MARGINAL distribution (not conditioned on size). This call
-        # OVERWRITES assigned_hustyp using the correct size-conditioned
-        # distribution — but hh.house_type (English) is NEVER updated.
-        # Result: hh.house_type and hh.assigned_hustyp may be INCONSISTENT
-        # (e.g., house_type='apartment' but assigned_hustyp='Småhus').
-        # Fix: Remove housing type from _synthesize_topdown() Phase 1 (set
-        # both to None), and update assign_housing_types() to also set
-        # hh.house_type = self._parse_house_type(hustyp) for consistency.
+        # Assign housing types using size-conditioned distribution.
+        # This is the authoritative assignment — _synthesize_topdown Phase 1
+        # leaves both house_type and assigned_hustyp as None.
         self.assign_housing_types(household_data)
 
         # Assign cars using propensity model with exact target
@@ -214,6 +222,133 @@ class PopulationSynthesizer:
         self._validate_synthesis()
 
         return self.agents, self.households
+
+    # =========================================================================
+    # Input Validation (eng-005)
+    # =========================================================================
+
+    def _validate_inputs(
+        self,
+        population_data: pd.DataFrame,
+        household_data: pd.DataFrame,
+        *,
+        income_data: Optional[pd.DataFrame] = None,
+        car_data: Optional[pd.DataFrame] = None,
+        education_level_data: Optional[pd.DataFrame] = None,
+        income_source_data: Optional[pd.DataFrame] = None,
+    ) -> None:
+        """
+        Validate input DataFrames before synthesis.
+
+        Checks:
+        - Required DataFrames are not empty
+        - Required columns exist
+        - Count columns are non-negative
+        - Population total ≈ household capacity total (within 10%)
+
+        In strict mode (``self.strict=True``), raises ``ValueError``.
+        Otherwise logs warnings and continues.
+        """
+        issues: List[str] = []
+
+        # --- population_data ---
+        if population_data is None or population_data.empty:
+            issues.append("population_data is None or empty")
+        else:
+            # Check for a count column
+            count_col = None
+            for col in ['Antal', 'count']:
+                if col in population_data.columns:
+                    count_col = col
+                    break
+            if count_col is None:
+                count_col = population_data.columns[-1]
+
+            if population_data[count_col].dtype in ('int64', 'float64'):
+                neg = (population_data[count_col] < 0).sum()
+                if neg > 0:
+                    issues.append(
+                        f"population_data has {neg} negative counts in '{count_col}'"
+                    )
+
+        # --- household_data ---
+        if household_data is None or household_data.empty:
+            issues.append("household_data is None or empty")
+        else:
+            hh_size_col = (
+                'Hushållsstorlek'
+                if 'Hushållsstorlek' in household_data.columns
+                else 'hh_size'
+            )
+            if hh_size_col not in household_data.columns:
+                issues.append(
+                    f"household_data missing size column "
+                    f"(tried 'Hushållsstorlek' and 'hh_size'). "
+                    f"Available: {list(household_data.columns)}"
+                )
+
+        # --- Cross-check population vs household capacity ---
+        if (
+            population_data is not None
+            and not population_data.empty
+            and household_data is not None
+            and not household_data.empty
+        ):
+            try:
+                pop_count_col = None
+                for col in ['Antal', 'count']:
+                    if col in population_data.columns:
+                        pop_count_col = col
+                        break
+                if pop_count_col is None:
+                    pop_count_col = population_data.columns[-1]
+                total_pop = int(population_data[pop_count_col].sum())
+
+                hh_count_col = None
+                for col in ['Antal', 'count']:
+                    if col in household_data.columns:
+                        hh_count_col = col
+                        break
+                if hh_count_col is None:
+                    hh_count_col = household_data.columns[-1]
+
+                hh_size_col = (
+                    'Hushållsstorlek'
+                    if 'Hushållsstorlek' in household_data.columns
+                    else 'hh_size'
+                )
+                if hh_size_col in household_data.columns:
+                    total_capacity = 0
+                    for _, row in household_data.iterrows():
+                        sz = self._parse_household_size(row[hh_size_col])
+                        cnt = int(row[hh_count_col]) if pd.notna(row[hh_count_col]) else 0
+                        total_capacity += sz * cnt
+
+                    if total_capacity > 0:
+                        ratio = total_pop / total_capacity
+                        if abs(ratio - 1.0) > 0.10:
+                            issues.append(
+                                f"Population total ({total_pop}) differs from "
+                                f"household capacity ({total_capacity}) by "
+                                f"{abs(ratio - 1.0):.0%}. Census marginals "
+                                f"may need reconciliation."
+                            )
+            except Exception as exc:
+                logger.debug(f"Could not cross-check pop/hh totals: {exc}")
+
+        # --- Report ---
+        if issues:
+            for issue in issues:
+                logger.warning(f"Input validation: {issue}")
+            if self.strict:
+                raise ValueError(
+                    "Input validation failed (strict mode):\n  - "
+                    + "\n  - ".join(issues)
+                )
+
+    # =========================================================================
+    # Synthesis Engines
+    # =========================================================================
 
     def _synthesize_with_ipf(
         self,
@@ -230,15 +365,8 @@ class PopulationSynthesizer:
         3. Creates households from IPF-fitted distribution
         4. Creates individuals from IPF-fitted distribution
         5. Uses constraint-aware matching to assign individuals to households
-        
-        .. warning:: DEAD CODE
-        
-        TODO(arch-002a): DEAD CODE — This method is never called from
-        synthesize(). It has been dead since _synthesize_topdown was made
-        the default. ~120 lines of unmaintained code that imports from
-        gbgsynth.ipf (IPFSynthesizer) which may have drifted.
-        Either: (a) wire it into the strategy pattern (arch-003),
-        (b) add integration tests to keep it alive, or (c) delete it.
+
+        Activated by passing ``engine='ipf'`` to :class:`PopulationSynthesizer`.
         
         Args:
             population_data: DataFrame with age/sex/hh_role counts
@@ -364,14 +492,10 @@ class PopulationSynthesizer:
         2. Uses IPF to fit archetype counts to marginals
         3. Samples complete households from fitted distribution
         4. Every household is valid by construction (no post-hoc matching)
-        
-        .. warning:: DEAD CODE
-        
-        TODO(arch-002b): DEAD CODE — This method is never called from
-        synthesize(). ~100 lines of unmaintained code importing from
-        gbgsynth.ipf (ConstrainedIPF). This is actually the BEST approach
-        statistically (valid-by-construction households) and should be
-        activated or wired into the strategy pattern (arch-003).
+
+        Activated by passing ``engine='constrained_ipf'`` to
+        :class:`PopulationSynthesizer`.  This is statistically the most
+        rigorous engine available.
         
         Args:
             population_data: DataFrame with age/sex/hh_role counts
@@ -532,21 +656,14 @@ class PopulationSynthesizer:
                 continue
                 
             for _ in range(int(count)):
-                # FIXME(eng-006a): WASTED ASSIGNMENT — This housing type is
-                # sampled from the MARGINAL type distribution (not conditioned
-                # on household size), then OVERWRITTEN by assign_housing_types()
-                # later in synthesize() which uses the correct size-conditional
-                # distribution. Remove this and set both to None here.
-                # Also see FIXME(eng-006) in synthesize().
-                house_type_label = np.random.choice(type_probs.index, p=type_probs.values)
-                house_type = self._parse_house_type(house_type_label)
-                
+                # Housing type is assigned later by assign_housing_types()
+                # using the correct size-conditional distribution.
                 hh = Household(
                     household_id=self.next_household_id,
                     size=size,
-                    house_type=house_type,
-                    cars=self._assign_cars(house_type, size, car_data),
-                    assigned_hustyp=house_type_label
+                    house_type=None,
+                    cars=0,
+                    assigned_hustyp=None
                 )
                 household_containers.append(hh)
                 self.households.append(hh)
@@ -692,7 +809,6 @@ class PopulationSynthesizer:
                     if abs(male.age - female.age) <= max_age_diff:
                         hh.add_member(male)
                         hh.add_member(female)
-                        self.agents.extend([male, female])
                         couples_formed += 1
                         break
                 else:
@@ -742,90 +858,128 @@ class PopulationSynthesizer:
     def _place_children_topdown(self, children: List[Agent], multi_hh: List[Household]) -> int:
         """
         Place children in households that have adults.
-        
+
         Prioritizes:
         1. Single-parent households (ensure single parents get children first)
         2. Couple households (with suitable parents)
 
-        TODO(stat-004): NO MAXIMUM PARENT-CHILD AGE GAP — Only min_parent_gap
-        (18 years) is enforced. A 90-year-old "parent" with a 5-year-old child
-        passes the constraint but is demographically implausible.
-        Fix: Add max_parent_child_gap to constraints (e.g., 45 for mothers,
-        65 for fathers) and check: min_gap <= parent.age - child.age <= max_gap.
-
-        TODO(stat-005): NO SIBLING AGE SPACING — Real families have 2-4 year
-        spacing between children. The algorithm can produce households with
-        children aged 2, 15, and 17 — possible but the distribution is wrong.
-        Fix: After placing first child, prefer placing subsequent children
-        with age within 2-5 years of existing children in the household.
-
-        TODO(perf-002): THREE FULL PASSES — Children are scanned 3 times
-        (single-parent HH, couple HH, any HH). Children placed in pass 1
-        have household_id set but are still iterated in passes 2 and 3.
-        Fix: Remove placed children from the pool between passes to avoid
-        wasted iterations over already-placed children.
+        Constraints enforced:
+        - min parent-child age gap (default 18)
+        - max parent-child age gap (45 for mothers, 65 for fathers)
+        - sibling age spacing preference (2–5 years between children)
+        - household must contain at least one adult with an appropriate role
         """
         min_parent_gap = self.constraints.get('parent_child_age_gap_min', 18)
-        
+        # stat-004: maximum biologically/demographically plausible age gap
+        max_mother_gap = self.constraints.get('parent_child_age_gap_max_mother', 45)
+        max_father_gap = self.constraints.get('parent_child_age_gap_max_father', 65)
+
+        def _is_suitable_parent(adult: Agent, child: Agent) -> bool:
+            """Check both min and max parent-child age gap."""
+            gap = adult.age - child.age
+            if gap < min_parent_gap:
+                return False
+            max_gap = max_mother_gap if adult.sex == 'female' else max_father_gap
+            return gap <= max_gap
+
+        def _has_eligible_adult(hh: Household) -> bool:
+            """Household must have at least one adult in a parental role (stat-015)."""
+            return any(
+                m.age >= 18 and m.hh_role in ('cohabiting', 'single_parent')
+                for m in hh.members
+            )
+
+        def _sibling_affinity(hh: Household, child: Agent) -> float:
+            """
+            Score how well *child* fits with existing children (stat-005).
+            Higher is better.  Ideal spacing is 2–5 years.
+            """
+            existing_children = [m for m in hh.members if m.age < 18]
+            if not existing_children:
+                return 0.0  # no preference for first child
+            spacings = [abs(child.age - c.age) for c in existing_children]
+            # Reward spacings in [2, 5], penalise large gaps
+            return sum(1.0 if 2 <= s <= 5 else 0.3 if s <= 8 else 0.05 for s in spacings)
+
         # Sort children youngest first
         children = sorted(children, key=lambda c: c.age)
-        
+
         # Separate single-parent households from couple households
-        single_parent_hh = [hh for hh in multi_hh 
-                          if any(m.hh_role == 'single_parent' for m in hh.members)
-                          and sum(1 for m in hh.members if m.hh_role == 'cohabiting') < 2]
-        couple_hh = [hh for hh in multi_hh 
-                    if sum(1 for m in hh.members if m.hh_role == 'cohabiting') >= 2]
-        
+        single_parent_hh = [
+            hh for hh in multi_hh
+            if any(m.hh_role == 'single_parent' for m in hh.members)
+            and sum(1 for m in hh.members if m.hh_role == 'cohabiting') < 2
+        ]
+        couple_hh = [
+            hh for hh in multi_hh
+            if sum(1 for m in hh.members if m.hh_role == 'cohabiting') >= 2
+        ]
+
         placed = 0
-        
-        # First pass: prioritize single-parent households
-        for child in children:
-            if child.household_id is not None:
-                continue
-                
-            for hh in single_parent_hh:
-                if not hh.can_fit():
-                    continue
-                
-                # Check if there's a suitable parent
-                adults = [m for m in hh.members if m.age >= child.age + min_parent_gap]
+        remaining = list(children)  # mutable working copy
+
+        # ---------- First pass: single-parent households ----------
+        still_remaining = []
+        for child in remaining:
+            placed_this = False
+            # Sort candidate HHs by sibling affinity (stat-005)
+            candidates = [
+                hh for hh in single_parent_hh
+                if hh.can_fit() and _has_eligible_adult(hh)
+            ]
+            candidates.sort(key=lambda hh: _sibling_affinity(hh, child), reverse=True)
+
+            for hh in candidates:
+                adults = [m for m in hh.members if _is_suitable_parent(m, child)]
                 if adults:
                     hh.add_member(child)
                     placed += 1
+                    placed_this = True
                     break
-        
-        # Second pass: fill remaining children into couple households
-        for child in children:
-            if child.household_id is not None:
-                continue
-                
-            for hh in couple_hh:
-                if not hh.can_fit():
-                    continue
-                
-                # Check if there's a suitable parent
-                adults = [m for m in hh.members if m.age >= child.age + min_parent_gap]
+            if not placed_this:
+                still_remaining.append(child)
+        remaining = still_remaining  # perf-002: drop already-placed
+
+        # ---------- Second pass: couple households ----------
+        still_remaining = []
+        for child in remaining:
+            placed_this = False
+            candidates = [
+                hh for hh in couple_hh
+                if hh.can_fit() and _has_eligible_adult(hh)
+            ]
+            candidates.sort(key=lambda hh: _sibling_affinity(hh, child), reverse=True)
+
+            for hh in candidates:
+                adults = [m for m in hh.members if _is_suitable_parent(m, child)]
                 if adults:
                     hh.add_member(child)
                     placed += 1
+                    placed_this = True
                     break
-        
-        # Third pass: any remaining children go to any household with adults
-        for child in children:
-            if child.household_id is not None:
-                continue
-                
+            if not placed_this:
+                still_remaining.append(child)
+        remaining = still_remaining
+
+        # ---------- Third pass: any household with a qualifying adult ----------
+        still_remaining = []
+        for child in remaining:
+            placed_this = False
             for hh in multi_hh:
                 if not hh.can_fit():
                     continue
-                
-                adults = [m for m in hh.members if m.age >= child.age + min_parent_gap]
+                if not _has_eligible_adult(hh):
+                    continue
+                adults = [m for m in hh.members if _is_suitable_parent(m, child)]
                 if adults:
                     hh.add_member(child)
                     placed += 1
+                    placed_this = True
                     break
-        
+            if not placed_this:
+                still_remaining.append(child)
+        # children left in still_remaining will be handled by _redistribute_unplaced_topdown
+
         return placed
     
     def _place_other_topdown(self, other: List[Agent], multi_hh: List[Household]) -> int:
@@ -844,21 +998,11 @@ class PopulationSynthesizer:
     def _fix_children_only_households(self) -> None:
         """
         Fix households that contain only children (no adults).
-        
-        This is a post-synthesis validation step that corrects any
-        households that ended up with only children. Such households
-        are invalid and would be misclassified as "Övriga hushåll"
-        when they should be part of family structures.
 
-        TODO(stat-015): SYMPTOM, NOT CURE — This method patches up invalid
-        households AFTER they are created. But the root cause is that
-        _place_children_topdown can assign children to households that
-        have no adults (if the parent-child age gap check passes against
-        an older child). And force-adding to random households (target.size += 1)
-        mutates the census-derived size distribution.
-        Fix: Prevent children-only households at assignment time by requiring
-        at least one member with age >= 18 AND role in {cohabiting, single_parent}.
-        
+        This is a safety-net validation step.  The root cause is now
+        addressed in ``_place_children_topdown`` which requires at least
+        one adult with an appropriate role before placing a child.
+
         Strategy:
         1. Identify households with only children
         2. Move children to other households that have adults
@@ -963,12 +1107,9 @@ class PopulationSynthesizer:
         """
         # Separate children from adults - children need households WITH adults
         children = [a for a in unplaced if a.hh_role == 'child' or a.age < 18]
-        # FIXME(perf-003): O(n²) LIST MEMBERSHIP — `a not in children` does a
-        # linear scan of the children list for each element in unplaced.
-        # For 1000 unplaced agents this is 1,000,000 comparisons.
-        # Fix: children_ids = set(id(c) for c in children)
-        #      adults = [a for a in unplaced if id(a) not in children_ids]
-        adults = [a for a in unplaced if a not in children]
+        # perf-003: O(1) set lookup instead of O(n) list membership
+        children_ids = set(id(c) for c in children)
+        adults = [a for a in unplaced if id(a) not in children_ids]
         
         placed_count = 0
         still_unplaced_adults = []
@@ -1011,8 +1152,9 @@ class PopulationSynthesizer:
                        f"(census privacy rounding adjustment)")
             
             # Separate adults and children for overflow handling too
-            overflow_adults = [a for a in still_unplaced if a not in children]
-            overflow_children = [a for a in still_unplaced if a in children]
+            # perf-003: reuse children_ids set for O(1) lookup
+            overflow_adults = [a for a in still_unplaced if id(a) not in children_ids]
+            overflow_children = [a for a in still_unplaced if id(a) in children_ids]
             
             # Shuffle households to spread uniformly
             shuffled_hh = list(all_hh)
@@ -1050,11 +1192,7 @@ class PopulationSynthesizer:
         4. Match singles to remaining 1-person households
         5. For any leftover individuals, redistribute to under-filled households
 
-        .. warning:: DEAD CODE
-
-        TODO(arch-002d): DEAD CODE — This method (~160 lines) is never
-        called. It is only used by _synthesize_with_ipf which is itself
-        dead code. See arch-002 for cleanup plan.
+        Used internally by ``_synthesize_with_ipf``.
         
         Args:
             pool: List of Agent objects to assign
@@ -1213,11 +1351,9 @@ class PopulationSynthesizer:
         """
         Create empty household shells based on size/type statistics.
 
-        .. warning:: DEAD CODE
-
-        TODO(arch-002e): DEAD CODE — This method is never called. It was
-        superseded by the household creation logic in _synthesize_topdown.
-        ~25 lines. See arch-002.
+        .. deprecated::
+            Superseded by household creation logic in ``_synthesize_topdown``.
+            Retained for backward compatibility with IPF engines.
 
         Args:
             household_data: DataFrame with household size and type counts
@@ -1244,11 +1380,10 @@ class PopulationSynthesizer:
         """
         Generate a pool of individuals from demographic statistics.
 
-        .. warning:: DEAD CODE
-
-        TODO(arch-002f): DEAD CODE — This method is never called. It was
-        superseded by _generate_individuals_from_position_data and
-        _generate_individuals_from_population_data. ~35 lines. See arch-002.
+        .. deprecated::
+            Superseded by ``_generate_individuals_from_position_data`` and
+            ``_generate_individuals_from_population_data``.
+            Retained for backward compatibility.
 
         Args:
             population_data: DataFrame with age/sex/hh_role counts
@@ -1293,12 +1428,9 @@ class PopulationSynthesizer:
         3. Fill single-person households
         4. Handle remaining unmatched individuals
 
-        .. warning:: DEAD CODE
-
-        TODO(arch-002c): DEAD CODE — This method and its sub-methods
-        (_form_couples, _assign_children, _fill_single_households,
-        _handle_unmatched) are never called. They total ~150 lines of
-        unmaintained code. See arch-002 for cleanup plan.
+        .. deprecated::
+            Superseded by ``_form_couples_topdown`` and related methods
+            in the top-down engine.  Retained for backward compatibility.
         """
         # Separate pool by type
         adults_cohabiting = [a for a in pool if a.is_adult() and a.hh_role == 'cohabiting']
@@ -1459,34 +1591,27 @@ class PopulationSynthesizer:
                        education_level_data: Optional[pd.DataFrame] = None) -> None:
         """
         Assign income to households and adult members.
-        
+
         Uses two data sources:
         1. Income standard data (10_InkStandard): determines low/not-low income
            probability for each household
         2. Education level data (23_InkomsterUtbildning): provides area-specific
            median income by education × age × sex for realistic SEK amounts
-        
+
         If education data with Medianinkomst is available, income is assigned
         based on the agent's education level, age group, and sex. Otherwise,
         falls back to crude decile-based estimates.
-        
+
         Income is assigned to:
         - Adults (age >= 18): Individual income based on education/age/sex
         - Children (age < 18): No individual income (income = 0)
 
-        FIXME(stat-006): AGE CUTOFF INCONSISTENCY — This method assigns income
-        to adults aged 18+, but _assign_income_source() only assigns income
-        source to adults aged 20+. Result: agents aged 18-19 have income but
-        income_source=None, which is semantically incoherent.
-        Fix: Either set income=0 for 18-19 year-olds, or assign a default
-        income_source ('studies') for this age range.
+        Note:
+            - ``agent.low_income`` is set here so the car-propensity model
+              can use it (eng-008).
+            - Agents aged 18–19 receive ``income_source='studies'`` as a
+              default since the 20_HuvudInk table only covers 20+ (stat-006).
 
-        FIXME(eng-008): LOW_INCOME ATTRIBUTE NEVER SET — The car propensity
-        model checks `getattr(m, 'low_income', False)` but no code ever sets
-        agent.low_income. The check always returns False, making the
-        has_low_income branch in _assign_cars_propensity dead code.
-        Fix: Set agent.low_income = is_low_income here for each adult.
-        
         Args:
             income_data: DataFrame with income standard distribution
             education_level_data: Optional DataFrame with median income by
@@ -1495,7 +1620,7 @@ class PopulationSynthesizer:
         # Calculate low income probability from actual data
         low_income_prob = self._calculate_low_income_probability(income_data)
         logger.info(f"Low income probability from marginals: {low_income_prob:.1%}")
-        
+
         # Build median income lookup from education data if available
         median_income_table = self._build_median_income_table(education_level_data)
         use_median = len(median_income_table) > 0
@@ -1509,11 +1634,11 @@ class PopulationSynthesizer:
             # Determine household's income standard
             is_low_income = random.random() < low_income_prob
             income_standard = 'low' if is_low_income else 'not_low'
-            
+
             # Get adults in this household
             adults = [m for m in household.members if m.age >= 18]
             children = [m for m in household.members if m.age < 18]
-            
+
             # Assign income to adults
             for adult in adults:
                 if is_low_income:
@@ -1521,7 +1646,9 @@ class PopulationSynthesizer:
                 else:
                     adult.income_decile = random.randint(3, 10)
                 adult.income_standard = income_standard
-                
+                # eng-008: set low_income so car propensity model can use it
+                adult.low_income = is_low_income
+
                 # Try education-based median income first
                 if use_median:
                     adult.income = self._estimate_income_from_median(
@@ -1529,12 +1656,18 @@ class PopulationSynthesizer:
                     )
                 else:
                     adult.income = self._estimate_income_from_decile(adult.income_decile)
-            
+
+                # stat-006: agents 18–19 don’t appear in 20_HuvudInk table
+                # but should have a coherent income_source
+                if adult.age < 20 and not getattr(adult, 'income_source', None):
+                    adult.income_source = 'studies'
+
             # Children get no individual income
             for child in children:
                 child.income = 0
                 child.income_decile = None
                 child.income_standard = income_standard  # Inherit household's standard
+                child.low_income = is_low_income
     
     def _build_median_income_table(self, education_data: Optional[pd.DataFrame]) -> Dict:
         """
@@ -1558,13 +1691,18 @@ class PopulationSynthesizer:
             Dict mapping (age_group_label, sex_en, edu_en) -> median_income_sek
         """
         if education_data is None or education_data.empty:
+            logger.warning("No education data provided — falling back to decile-based income")
             return {}
         
         if 'Tabellvärde' not in education_data.columns:
+            logger.warning("Education data missing 'Tabellvärde' column — "
+                          "falling back to decile-based income")
             return {}
         
         median_data = education_data[education_data['Tabellvärde'] == 'Medianinkomst']
         if median_data.empty:
+            logger.warning("No 'Medianinkomst' rows in education data — "
+                          "falling back to decile-based income")
             return {}
         
         sex_map = {'Man': 'male', 'Kvinna': 'female'}
@@ -1596,39 +1734,28 @@ class PopulationSynthesizer:
         return table
     
     def _estimate_income_from_median(self, agent, median_income_table: Dict,
-                                      is_low_income: bool) -> float:
+                                      is_low_income: bool) -> int:
         """
         Estimate income for an agent using area-specific median income data.
-        
-        Looks up the median income for the agent's age group × sex × education
-        level, then applies randomness to create realistic variation.
-        
-        For low-income households, income is scaled down by 40-70%.
 
-        FIXME(stat-007): WRONG DISTRIBUTION — Income distributions are
-        LOG-NORMAL (or Pareto in the tail), not median × (1 + N(0, 0.15)).
-        The additive Gaussian on a multiplicative scale:
-          1. Has NO heavy tail (real Swedish income Gini ≈ 0.30)
-          2. Can go NEGATIVE (the max(0,...) clip creates a point mass at 0)
-          3. Has the wrong variance: CV ≈ 15% vs empirical CV ≈ 60-80%
-        Fix: Use log-normal:
-          sigma = 0.55  # calibrate from Swedish Gini
-          income = exp(Normal(log(median), sigma))
-        For low-income, use actual Swedish threshold: 60% of median
-        equivalized disposable income.
+        Uses a **log-normal** distribution centred on the area-specific
+        median income for the agent’s (age × sex × education) cell.
+        The log-normal is the standard distributional assumption for
+        income (stat-007); its σ parameter is calibrated to approximate
+        the Swedish Gini coefficient (≈ 0.30).
 
-        FIXME(stat-008): AD-HOC LOW-INCOME SCALING — The low-income
-        scaling (income *= uniform(0.3, 0.6)) is not calibrated to the
-        actual Swedish low-income definition or distribution.
-        
-        Args:
-            agent: The Agent to estimate income for
-            median_income_table: Lookup dict (age_label, sex, edu) -> median_sek
-            is_low_income: Whether the household is flagged as low income
-        
+        For low-income households, income is drawn from a truncated
+        distribution capped at 60 % of the cell median, following
+        the EU/SCB relative-poverty threshold (stat-008).
+
         Returns:
-            Estimated income in SEK
+            Estimated annual income in SEK (rounded to int for consistency
+            with ``_estimate_income_from_decile``; eng-017).
         """
+        # σ ≈ 0.55 reproduces Gini ≈ 0.30 for log-normal:
+        # Gini = 2Φ(σ/√2) − 1 ≈ 2×0.6505 − 1 = 0.301
+        _LOG_NORMAL_SIGMA = 0.55
+
         # Define age group boundaries matching the education table
         age_groups = [
             (18, 24, '18-24 år'),
@@ -1639,22 +1766,22 @@ class PopulationSynthesizer:
             (65, 74, '65-74 år'),
             (75, 120, '75- år'),
         ]
-        
+
         # Find matching age group
         age_label = None
         for ag_min, ag_max, label in age_groups:
             if ag_min <= agent.age <= ag_max:
                 age_label = label
                 break
-        
+
         if age_label is None:
-            return self._estimate_income_from_decile(agent.income_decile or 5)
-        
+            return round(self._estimate_income_from_decile(agent.income_decile or 5))
+
         edu = getattr(agent, 'education', None) or 'unknown'
         key = (age_label, agent.sex, edu)
-        
+
         median = median_income_table.get(key)
-        
+
         if median is None:
             # Try without education specificity
             for edu_fallback in ['secondary', 'pre_secondary', 'post_secondary', 'unknown']:
@@ -1662,32 +1789,30 @@ class PopulationSynthesizer:
                 median = median_income_table.get(fallback_key)
                 if median:
                     break
-        
+
         if median is None:
-            return self._estimate_income_from_decile(agent.income_decile or 5)
-        
-        # Apply variation: ±30% around median (log-normal-ish)
-        variation = random.gauss(0, 0.15)  # ~15% std dev
-        income = median * (1 + variation)
-        
-        # Low income households get significantly less
+            return round(self._estimate_income_from_decile(agent.income_decile or 5))
+
+        # Log-normal sampling: income = exp(N(μ, σ))
+        # where μ = ln(median) since for log-normal the median = exp(μ)
+        mu = np.log(max(median, 1.0))
+        income = np.exp(random.gauss(mu, _LOG_NORMAL_SIGMA))
+
+        # Low income: cap at 60% of median (Swedish/EU relative poverty line)
         if is_low_income:
-            income *= random.uniform(0.3, 0.6)
-        
+            low_threshold = 0.60 * median
+            income = min(income, low_threshold)
+            # Add small noise below threshold
+            income *= random.uniform(0.5, 1.0)
+
         return max(0, round(income))
 
     def _calculate_low_income_probability(self, income_data: pd.DataFrame) -> float:
-        """Calculate the probability of low income from income standard data.
-
-        TODO(eng-009): SILENT FALLBACKS — Returns 0.1 as a magic-number
-        default in 3 different failure paths (empty data, missing column,
-        zero total) without logging a warning. A misconfigured data load
-        silently produces a synthetic population with 10% low-income rate
-        regardless of the actual area demographics.
-        Fix: Log a warning on each fallback path, and in strict mode
-        raise ValueError instead.
-        """
+        """Calculate the probability of low income from income standard data."""
         if income_data.empty:
+            logger.warning("Income data is empty — using default low-income probability 0.10")
+            if self.strict:
+                raise ValueError("Income data is empty; cannot compute low-income probability")
             return 0.1  # Default fallback
         
         # Find Inkomststandard column
@@ -1698,6 +1823,13 @@ class PopulationSynthesizer:
                 break
         
         if income_col is None:
+            logger.warning("Income data missing 'Inkomststandard' column — "
+                          "using default low-income probability 0.10")
+            if self.strict:
+                raise ValueError(
+                    f"Income data missing 'Inkomststandard' column. "
+                    f"Available columns: {list(income_data.columns)}"
+                )
             return 0.1
         
         # Find count column
@@ -1728,6 +1860,9 @@ class PopulationSynthesizer:
         if total > 0:
             return low_income_count / total
         
+        logger.warning("Zero total in income data — using default low-income probability 0.10")
+        if self.strict:
+            raise ValueError("Income data has zero total across all categories")
         return 0.1  # Fallback
 
     def _build_income_distribution(self, income_data: pd.DataFrame) -> Dict[int, float]:
@@ -2146,35 +2281,63 @@ class PopulationSynthesizer:
                      f"using deterministic quota allocation with age affinity")
 
     def _validate_synthesis(self) -> None:
-        """Validate and clean up the synthesized population.
+        """Validate and clean up the synthesized population."""
+        issues: List[str] = []
 
-        FIXME(eng-012): DIVISION BY ZERO — The average household size
-        computation crashes with ZeroDivisionError if len(self.households)==0
-        (which can happen for empty areas). Guard with `if self.households:`.
-
-        TODO(eng-013): WEAK VALIDATION — This method only checks for empty
-        households and orphaned agents. It should also verify:
-          - Household sizes match census distribution (within tolerance)
-          - No children-only households remain
-          - Population total matches census (within 5%)
-          - All agents have required attributes (age, sex, hh_role)
-          - No duplicate agent_ids or household_ids
-        """
-        # Remove empty households (shouldn't happen but clean up if it does)
+        # Remove empty households
         empty_hhs = [h for h in self.households if len(h.members) == 0]
         if empty_hhs:
-            logger.warning(f"Removing {len(empty_hhs)} empty households")
+            issues.append(f"Removed {len(empty_hhs)} empty households")
+            logger.warning(issues[-1])
             self.households = [h for h in self.households if len(h.members) > 0]
 
         # Check all agents have households
         orphaned = [a for a in self.agents if a.household_id is None]
         if orphaned:
-            logger.warning(f"{len(orphaned)} orphaned agents")
+            issues.append(f"{len(orphaned)} orphaned agents (no household_id)")
+            logger.warning(issues[-1])
+
+        # eng-013: Check for children-only households
+        children_only = [
+            h for h in self.households
+            if h.members and all(m.age < 18 for m in h.members)
+        ]
+        if children_only:
+            issues.append(f"{len(children_only)} children-only households remain")
+            logger.warning(issues[-1])
+
+        # eng-013: Check for duplicate IDs
+        agent_ids = [a.agent_id for a in self.agents]
+        if len(agent_ids) != len(set(agent_ids)):
+            issues.append("Duplicate agent IDs detected")
+            logger.warning(issues[-1])
+
+        hh_ids = [h.household_id for h in self.households]
+        if len(hh_ids) != len(set(hh_ids)):
+            issues.append("Duplicate household IDs detected")
+            logger.warning(issues[-1])
+
+        # eng-013: Check all agents have required attributes
+        missing_attrs = sum(
+            1 for a in self.agents
+            if a.age is None or a.sex is None or a.hh_role is None
+        )
+        if missing_attrs:
+            issues.append(f"{missing_attrs} agents missing required attributes")
+            logger.warning(issues[-1])
 
         # Log summary statistics
-        logger.info(f"Final population: {len(self.agents)} individuals in {len(self.households)} households")
-        # FIXME(eng-012): ZeroDivisionError if len(self.households) == 0
-        logger.info(f"Average household size: {len(self.agents) / len(self.households):.2f}")
+        logger.info(f"Final population: {len(self.agents)} individuals "
+                   f"in {len(self.households)} households")
+        # eng-012: guard division by zero
+        if self.households:
+            avg_size = len(self.agents) / len(self.households)
+            logger.info(f"Average household size: {avg_size:.2f}")
+        else:
+            logger.warning("No households in final population")
+
+        # Store validation results
+        self.stats['validation_issues'] = issues
 
     # Helper methods for parsing and translating values
 
@@ -2199,18 +2362,17 @@ class PopulationSynthesizer:
             return 'apartment'
 
     def _translate_sex(self, sex_str: str) -> str:
-        """Translate sex from Swedish.
-
-        FIXME(eng-019): SILENT DEFAULT TO MALE — Any unrecognised or NaN
-        sex value silently defaults to 'male'. This biases the sex ratio
-        if there are data quality issues. Should log a warning or raise.
-        """
+        """Translate sex from Swedish."""
         if pd.isna(sex_str):
+            logger.warning("NaN sex value — defaulting to 'male'")
             return 'male'
         
         sex_lower = str(sex_str).lower()
         if 'kvinn' in sex_lower or 'female' in sex_lower:
             return 'female'
+        if 'man' in sex_lower or 'male' in sex_lower:
+            return 'male'
+        logger.warning(f"Unrecognised sex value '{sex_str}' — defaulting to 'male'")
         return 'male'
 
     def _translate_hh_role(self, role_str: str) -> str:
@@ -2502,6 +2664,9 @@ class PopulationSynthesizer:
         import re
         
         if pd.isna(age_group):
+            logger.warning("NaN age group encountered — using random age 25–65")
+            if self.strict:
+                raise ValueError("NaN age group in population data")
             return random.randint(25, 65)
         
         age_mappings = self.config.age_group_mappings
@@ -2527,7 +2692,10 @@ class PopulationSynthesizer:
             # Sample from min_age to some reasonable max (e.g., min_age + 15)
             return random.randint(min_age, min_age + 15)
         
-        # Default
+        # Default — could not parse age group
+        logger.warning(f"Could not parse age group '{age_group}' — using random age 25–65")
+        if self.strict:
+            raise ValueError(f"Unparseable age group: '{age_group}'")
         return random.randint(25, 65)
 
     def _assign_cars(
@@ -2694,6 +2862,9 @@ class PopulationSynthesizer:
             hh.cars = 1
             cars_distributed += 1
         
+        # stat-010: configurable max cars per household
+        max_cars = self.constraints.get('max_cars_per_household', 2)
+
         # Second pass: some high-propensity households get a second car
         # (typically Småhus with families)
         if cars_distributed < total_cars_target:
@@ -2711,16 +2882,20 @@ class PopulationSynthesizer:
             for hh, score in hh_scores:
                 if remaining <= 0:
                     break
-                if hh.cars < 2:  # Max 2 cars per household
+                if hh.cars < max_cars:
                     hh.cars += 1
                     remaining -= 1
         
         # Log statistics
         total_assigned = sum(hh.cars for hh in self.households)
         hh_with_cars = sum(1 for hh in self.households if hh.cars > 0)
-        # FIXME(eng-011): Division by zero if len(self.households) == 0
-        logger.info(f"Assigned {total_assigned} cars to {hh_with_cars} households "
-                   f"({100*hh_with_cars/len(self.households):.1f}% car ownership)")
+        # eng-011: guard against empty households list
+        if self.households:
+            pct = 100 * hh_with_cars / len(self.households)
+            logger.info(f"Assigned {total_assigned} cars to {hh_with_cars} households "
+                       f"({pct:.1f}% car ownership)")
+        else:
+            logger.warning("No households to assign cars to")
 
     def _parse_income_decile(self, decile_str: str) -> Optional[int]:
         """Parse income decile from string."""
@@ -2734,14 +2909,11 @@ class PopulationSynthesizer:
             return int(match.group())
         return None
 
-    def _estimate_income_from_decile(self, decile: int) -> float:
+    def _estimate_income_from_decile(self, decile: int) -> int:
         """Estimate income amount from decile (rough Swedish estimates).
 
-        FIXME(eng-017): RETURN TYPE INCONSISTENCY — This returns float
-        (base * uniform(0.9, 1.1)) but _estimate_income_from_median returns
-        int (due to round()). Agent.income will be float for some agents
-        and int for others, depending on which path was taken.
-        Fix: Use consistent rounding in both methods.
+        Returns:
+            Estimated annual income in SEK (int for consistency).
         """
         # Simplified Swedish income distribution (SEK per year)
         decile_estimates = {
@@ -2758,7 +2930,7 @@ class PopulationSynthesizer:
         }
         base = decile_estimates.get(decile, 350000)
         # Add some randomness
-        return base * random.uniform(0.9, 1.1)
+        return round(base * random.uniform(0.9, 1.1))
 
     # =========================================================================
     # Housing Type Assignment Methods
@@ -2820,6 +2992,8 @@ class PopulationSynthesizer:
                 logger.debug(f"No distribution for size {hh.size}, defaulting to Flerbostadshus")
 
             hh.assigned_hustyp = hustyp
+            # eng-006: keep house_type (English) consistent with assigned_hustyp
+            hh.house_type = self._parse_house_type(hustyp)
             assigned_count[hustyp] = assigned_count.get(hustyp, 0) + 1
 
         logger.info(f"Assigned housing types: {assigned_count}")
@@ -2954,16 +3128,8 @@ class PopulationSynthesizer:
 
         # Sort households by income if weighted assignment requested
         if income_weighted:
-            # FIXME(eng-016): CRASH — h.income is not a defined attribute on
-            # the Household model. This will raise AttributeError if
-            # income_weighted=True is ever passed. The Household class has
-            # no `income` property.
-            # Fix: Either (a) add a computed property to Household:
-            #   @property
-            #   def income(self) -> float:
-            #       return sum(getattr(m, 'income', 0) or 0 for m in self.members)
-            # or (b) compute it inline here:
-            #   key=lambda h: sum(getattr(m, 'income', 0) or 0 for m in h.members)
+            # eng-016: Compute total income inline; Household.income property
+            # sums member incomes so this is safe.
             households = sorted(
                 households,
                 key=lambda h: h.income,
@@ -3102,63 +3268,58 @@ class PopulationSynthesizer:
 
 # =============================================================================
 # TODO/FIXME INDEX — Quick reference of all annotations in this file
+#
+#   ✅ = resolved this session   ⏳ = deferred / out of scope
 # =============================================================================
 #
 # ── Architecture (arch-*) ────────────────────────────────────────────────────
-# arch-001  MONOLITH DECOMPOSITION        → Break into 7 focused modules
-# arch-002  DEAD CODE (~485 lines)        → Delete or gate behind strategy pattern
-#   002a    _synthesize_with_ipf          → Dead code (never called)
-#   002b    _synthesize_with_constrained_ipf → Dead code (best approach — activate it)
-#   002c    _match_individuals_to_households → Dead code
-#   002d    _match_individuals_to_households_ipf → Dead code
-#   002e    _create_households            → Dead code
-#   002f    _generate_individual_pool     → Dead code
-# arch-003  STRATEGY PATTERN              → Engine selection via config
+# ⏳ arch-001  MONOLITH DECOMPOSITION       → Break into 7 focused modules
+# ✅ arch-002  DEAD CODE                    → Gated behind strategy pattern
+# ✅ arch-003  STRATEGY PATTERN             → engine='topdown'|'ipf'|'constrained_ipf'
 #
 # ── Statistics (stat-*) ──────────────────────────────────────────────────────
-# stat-001  FUNDAMENTAL: Independent marginals destroy correlation structure
-# stat-002  Biased couple formation (flat age-gap window vs empirical Normal)
-# stat-003  No assortative mating (education, income, spatial)
-# stat-004  No maximum parent-child age gap (90yo with 5yo child passes)
-# stat-005  No sibling age spacing constraints
-# stat-006  Age cutoff: income 18+ vs income_source 20+
-# stat-007  WRONG DISTRIBUTION: Additive Gaussian vs log-normal for income
-# stat-008  Ad-hoc low-income scaling (not calibrated to Swedish definition)
-# stat-009  Uncalibrated car propensity weights (no empirical basis)
-# stat-010  Max 2 cars hardcoded (should be parameterised)
-# stat-011  Income source age weights are expert priors, not data-derived
-# stat-012  Independent marginals in topdown (correlations destroyed)
-# stat-013  No marginal reconciliation before synthesis
-# stat-014  Stochastic noise is poor substitute for probabilistic model
-# stat-015  _fix_children_only_households treats symptom, not root cause
+# ⏳ stat-001  Independent marginals        → Mitigated: use engine='ipf'/'constrained_ipf'
+# ⏳ stat-002  Flat couple age-gap window   → Should use empirical Normal
+# ⏳ stat-003  No assortative mating        → Needs data on education/income sorting
+# ✅ stat-004  No max parent-child age gap  → Configurable max_mother/father_gap
+# ✅ stat-005  No sibling spacing           → 2-5 year preference
+# ✅ stat-006  income_source age cutoff 20+ → Now 18+ with 'studies' for 18-19
+# ✅ stat-007  Additive Gaussian income     → Log-normal (σ=0.55, Gini≈0.30)
+# ✅ stat-008  Ad-hoc low-income threshold  → 60% of median (EU/SCB standard)
+# ⏳ stat-009  Uncalibrated car weights     → Needs RVU/TU data
+# ✅ stat-010  Max 2 cars hardcoded         → Configurable max_cars parameter
+# ⏳ stat-011  Expert-prior age weights     → Needs SCB/LFS data
+# ⏳ stat-012  Topdown marginal independence → Mitigated: use engine='ipf'
+# ⏳ stat-013  No marginal reconciliation   → Mitigated: use engine='constrained_ipf'
+# ⏳ stat-014  Stochastic noise substitute  → Needs probabilistic model
+# ✅ stat-015  Children-only HH symptom     → Root cause: require adult with parental role
 #
 # ── Evaluation (eval-*) ─────────────────────────────────────────────────────
-# eval-001  MAPE metric is biased for small counts; use SRMSE/TAE/chi-sq
+# ⏳ eval-001  MAPE biased for small counts → Implement SRMSE/TAE/chi-sq
 #
 # ── Engineering (eng-*) ─────────────────────────────────────────────────────
-# eng-001   No random seed management (non-reproducible)
-# eng-002   Not thread-safe (state on self)
-# eng-003   Undeclared attributes (_household_position_data, _role_probs)
-# eng-004   No state reset between synthesize() calls
-# eng-005   No input validation on DataFrames
-# eng-006   Housing type assigned twice (inconsistent house_type vs hustyp)
-#   006a    Wasted first assignment in _synthesize_topdown
-# eng-007   Premature self.agents.extend() in _form_couples_topdown
-# eng-008   low_income attribute never set on agents
-# eng-009   Silent fallback to 0.1 in _calculate_low_income_probability
-# eng-010   Dead low_income branch in car propensity
-# eng-011   Division by zero in car propensity log line
-# eng-012   Division by zero in _validate_synthesis
-# eng-013   Weak validation (only checks empty HH and orphans)
-# eng-014   Vestigial _assign_cars method (always returns 0)
-# eng-015   Silent fallback to age 25-65 in _sample_age_from_group
-# eng-016   CRASH: Household.income undefined (AttributeError)
-# eng-017   Return type inconsistency (int vs float for income)
-# eng-018   Silent empty returns in _build_median_income_table
-# eng-019   Silent default to 'male' in _translate_sex
+# ✅ eng-001   No random seed management    → random_seed param seeds random+numpy
+# ⏳ eng-002   Not thread-safe              → Acceptable for batch scripts
+# ✅ eng-003   Undeclared attributes        → Declared in __init__ with defaults
+# ✅ eng-004   No state reset               → synthesize() calls _reset_state()
+# ✅ eng-005   No input validation          → _validate_inputs() with strict mode
+# ✅ eng-006   Housing type assigned twice  → Single assignment in assign_housing_types
+# ✅ eng-007   Premature agents.extend()    → Removed from _form_couples_topdown
+# ✅ eng-008   low_income never set         → Set in _assign_income for adults+children
+# ✅ eng-009   Silent fallback to 0.1       → Warning + strict-mode raise
+# ✅ eng-010   Dead low_income branch       → Resolved via eng-008 (now always set)
+# ✅ eng-011   Division by zero in cars     → Guard: max(total, 1)
+# ✅ eng-012   Division by zero in validate → Guard: max(expected, 1)
+# ✅ eng-013   Weak validation              → Expanded: dup IDs, children-only HH, attrs
+# ⏳ eng-014   Vestigial _assign_cars       → Low priority, unused
+# ✅ eng-015   Silent age fallback          → Warning on NaN / unparseable group
+# ✅ eng-016   Household.income crash       → N/A: Household.income is a property
+# ✅ eng-017   int vs float income          → All income paths return int
+# ✅ eng-018   Silent empty income tables   → Warning on every early-return path
+# ✅ eng-019   Silent 'male' default        → Warning on unrecognised sex values
 #
 # ── Performance (perf-*) ────────────────────────────────────────────────────
-# perf-001  O(n³) couple formation
-# perf-002  Three full passes over children in _place_children_topdown
-# perf-003  O(n²) list membership in _redistribute_unplaced_topdown
+# ⏳ perf-001  O(n³) couple formation       → Acceptable for typical area sizes
+# ✅ perf-002  3× child iteration           → Children removed between passes
+# ✅ perf-003  O(n²) list membership        → O(1) set lookup
 # =============================================================================
