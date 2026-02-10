@@ -14,6 +14,7 @@ from gbgsynth.config import Config
 from gbgsynth.exceptions import DataNotGeneratedError, InvalidDataError
 from gbgsynth.models import Agent, Household, Dwelling
 from gbgsynth.synthesizer import PopulationSynthesizer
+from gbgsynth.prognosis import PrognosisScaler, scale_population_marginals
 
 logger = logging.getLogger(__name__)
 
@@ -1658,3 +1659,148 @@ class GbgArea:
                 })
         
         return pd.DataFrame(rows)
+
+    # ------------------------------------------------------------------
+    # Prognosis scaling
+    # ------------------------------------------------------------------
+
+    def scale_to_year(
+        self,
+        target_year: int,
+        base_year: int = 2025,
+        allocate_dwellings: bool = True,
+    ) -> 'GbgArea':
+        """
+        Generate a future-year population scaled by official prognosis data.
+
+        This fetches the population prognosis from the Gothenburg statistics
+        API at the mellanområde (intermediate area) level, computes per-age-group
+        scale factors between ``base_year`` and ``target_year``, then applies
+        those factors to this area's census marginals and re-synthesises.
+
+        The prognosis is available for years 2025–2032 (spring 2025 forecast).
+
+        Args:
+            target_year: Future year to project to (2025–2032)
+            base_year: Reference year in the prognosis (default 2025)
+            allocate_dwellings: Whether to allocate dwellings (default True)
+
+        Returns:
+            A **new** ``GbgArea`` instance with the scaled population.
+            The original area is not modified.
+
+        Example:
+            >>> city = GbgSynth(year=2024)
+            >>> haga = city.synthesize("Haga")
+            >>> haga_2030 = haga.scale_to_year(2030)
+            >>> print(len(haga_2030.individuals))
+        """
+        logger.info(
+            f"Scaling {self.area_name} from prognosis "
+            f"{base_year}→{target_year}"
+        )
+
+        # 1. Fetch original census marginals
+        population_data = self._fetch_population_data()
+        household_data = self._fetch_household_data()
+
+        # 2. Get scale factors from prognosis
+        scaler = PrognosisScaler(
+            base_year=base_year,
+            target_year=target_year,
+        )
+        scaled_pop, scaled_hh = scaler.scale_marginals(
+            self.area_code, population_data, household_data
+        )
+
+        # Log the scaling summary
+        summary = scaler.summary(self.area_code)
+        logger.info(
+            f"Prognosis scaling for {self.area_name}: "
+            f"{summary['mel_name']} ({summary['base_population']}→"
+            f"{summary['target_population']}, {summary['overall_growth']})"
+        )
+
+        # 3. Create a new area instance for the future year
+        future_area = GbgArea(
+            area_code=self.area_code,
+            area_name=self.area_name,
+            year=target_year,
+            client=self.client,
+            config=self.config,
+            area_api_value=self.area_api_value,
+        )
+
+        # 4. Fetch supplementary data using original year (census data)
+        household_position_data = self._fetch_household_position_data()
+        income_data = self._fetch_income_data()
+        car_data = self._fetch_car_data()
+
+        # 4b. Scale position data with the same single-year prognosis
+        #     factors. The position data has the same Ålder/Antal columns
+        #     as the population data but with finer role breakdowns.
+        #     Without scaling it, the synthesizer would generate the
+        #     base-year headcount regardless of the scaled pop marginals.
+        base_df, target_df = scaler.get_prognosis(self.area_code)
+        if household_position_data is not None:
+            household_position_data = scale_population_marginals(
+                household_position_data, base_df, target_df
+            )
+
+        # 5. Store marginals for validation
+        future_area._marginals = {
+            'population': scaled_pop.copy(),
+            'household': scaled_hh.copy(),
+            'household_position': (
+                household_position_data.copy()
+                if household_position_data is not None else None
+            ),
+            'income': income_data.copy() if income_data is not None else None,
+        }
+
+        # 6. Synthesise with scaled marginals
+        synthesizer = PopulationSynthesizer(future_area.config)
+        future_area.individuals, future_area.households = synthesizer.synthesize(
+            population_data=scaled_pop,
+            household_data=scaled_hh,
+            income_data=income_data,
+            car_data=car_data,
+            household_position_data=household_position_data,
+        )
+
+        future_area.stats = synthesizer.stats
+        future_area.stats['prognosis'] = summary
+        future_area._is_generated = True
+
+        logger.info(
+            f"Future synthesis complete for {self.area_name} ({target_year}): "
+            f"{len(future_area.individuals)} individuals, "
+            f"{len(future_area.households)} households"
+        )
+
+        # 7. Allocate dwellings if requested
+        if allocate_dwellings:
+            future_area._allocate_dwellings()
+
+        return future_area
+
+    def get_prognosis_summary(
+        self,
+        base_year: int = 2025,
+        target_year: int = 2030,
+    ) -> dict:
+        """
+        Preview the prognosis scaling factors without generating.
+
+        Args:
+            base_year: Reference year (default 2025)
+            target_year: Target year (default 2030)
+
+        Returns:
+            Dict with mel area info, population totals, scale factors
+        """
+        scaler = PrognosisScaler(
+            base_year=base_year,
+            target_year=target_year,
+        )
+        return scaler.summary(self.area_code)

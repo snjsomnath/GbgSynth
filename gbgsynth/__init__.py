@@ -30,6 +30,17 @@ from gbgsynth.exceptions import (
 from gbgsynth import plotting
 from gbgsynth import validation
 from gbgsynth import exporters
+from gbgsynth import prognosis
+
+# Prognosis scaling
+from gbgsynth.prognosis import (
+    PrognosisScaler,
+    PrognosisClient,
+    get_pri_to_mel,
+    get_mel_for_pri,
+    get_sibling_pri_codes,
+    PROGNOSIS_YEARS,
+)
 
 # Exporter convenience imports
 from gbgsynth.exporters import (
@@ -112,4 +123,12 @@ __all__ = [
     "get_neighbourhood_heights_path",
     "get_missing_neighbourhood_heights",
     "get_mel_shapefile_path",
+    # Prognosis scaling
+    "prognosis",
+    "PrognosisScaler",
+    "PrognosisClient",
+    "get_pri_to_mel",
+    "get_mel_for_pri",
+    "get_sibling_pri_codes",
+    "PROGNOSIS_YEARS",
 ]

@@ -372,6 +372,56 @@ class GbgSynth:
             config=self.config
         )
 
+    def synthesize_future(
+        self,
+        area: str,
+        target_year: int,
+        base_year: int = 2025,
+        **kwargs,
+    ) -> GbgArea:
+        """
+        Synthesise a population scaled to a future prognosis year.
+
+        This is a convenience method that combines ``synthesize()`` with
+        prognosis scaling. It first generates a base-year population,
+        then re-synthesises with marginals scaled by the official
+        Gothenburg population prognosis.
+
+        The prognosis data is published at the mellanområde (intermediate
+        area) level. The mapping from primärområde to mellanområde is
+        handled automatically.
+
+        Available prognosis years: 2025–2032.
+
+        Args:
+            area: Area identifier (name, code, or full name)
+            target_year: Future year to project to (2025–2032)
+            base_year: Reference year in the prognosis (default 2025)
+            **kwargs: Passed to ``scale_to_year()``
+
+        Returns:
+            GbgArea with the future-year scaled population
+
+        Raises:
+            AreaNotFoundError: If area cannot be found
+            ValueError: If target_year outside 2025–2032
+
+        Example:
+            >>> city = GbgSynth(year=2024)
+            >>> haga_2030 = city.synthesize_future("Haga", target_year=2030)
+            >>> print(len(haga_2030.individuals))
+
+            # Compare to base year:
+            >>> haga_now = city.synthesize("Haga")
+            >>> print(f"Growth: {len(haga_2030.individuals) - len(haga_now.individuals)}")
+        """
+        gbg_area = self.get_area(area)
+        return gbg_area.scale_to_year(
+            target_year=target_year,
+            base_year=base_year,
+            **kwargs,
+        )
+
     def generate_all_areas(self, output_dir: str = "./output") -> None:
         """
         Generate synthetic populations for all areas (batch processing).

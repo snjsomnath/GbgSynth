@@ -1,6 +1,6 @@
 # GbgSynth - Synthetic Population Generator for Gothenburg
 
-![Tests](https://img.shields.io/badge/tests-271%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-316%20passed-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Areas](https://img.shields.io/badge/areas-96%20neighbourhoods-orange)
@@ -18,6 +18,7 @@ A modular Python library for procedurally generating synthetic populations using
 - **Housing Type Integration**: Links households to building types (Småhus, Flerbostadshus)
 - **Dwelling Allocation**: Assigns households to dwellings with building footprint georeferencing
 - **Car Ownership**: Propensity-based vehicle assignment from census data
+- **Prognosis Scaling**: Project populations to future years (2025–2032) using official prognosis data
 - **Validation Suite**: Comprehensive marginal comparison and out-of-sample validation
 
 ## Installation
@@ -308,6 +309,47 @@ report = validator.run_all_validations()
 - **Partner Age Difference**: Maximum 10 years
 - **Biological Parent Age**: Minimum 18 years older than children
 - **Housing Compatibility**: Household size must match building capacity
+
+## Prognosis Scaling
+
+GbgSynth can project neighbourhood populations to future years (2025–2032) using official prognosis data from the Gothenburg Statistics API. The scaling uses per-single-year population prognosis data (ages 0–99) at the mellanområde level, computing precise scale factors for each census age bin.
+
+### Usage
+
+```python
+from gbgsynth import GbgSynth
+
+city = GbgSynth(year=2024)
+
+# Synthesize with future year scaling
+haga = city.synthesize("Haga", target_year=2032)
+print(f"Projected population: {len(haga.individuals)}")
+
+# Or scale an existing area
+area = city.get_area("Haga")
+area.generate()
+area.scale_to_year(2032)
+area.generate()  # Re-synthesize with scaled marginals
+```
+
+### Demographic Dashboard
+
+The 8-panel dashboard below shows the demographic impact of scaling Haga (area 107) from 2024 to 2032. The prognosis projects a **−2.1% population decline** (3826 → 3744), with notable shifts in age structure: children decrease from 850 to 771 while singles increase from 1007 to 1025.
+
+<p align="center">
+  <img src="plots/107_prognosis_2032.png" width="900" alt="8-panel demographic dashboard showing prognosis scaling for Haga 2024→2032"/>
+</p>
+
+Panels: **(a)** Age group scale factors, **(b)** Population pyramids (base vs. projected), **(c)** Household size distribution, **(d)** Household type composition, **(e)** Sex ratio changes, **(f)** Key demographic indicators, **(g)** Population trajectory 2025–2032, **(h)** Age-bin × year heatmap of scale factors.
+
+### How It Works
+
+1. **Prognosis data**: Fetched from `14_PrognosMO21.px` at the mellanområde (intermediate area) level, providing population counts for every single year of age (0–99) for years 2025–2032
+2. **Geographic mapping**: Each primärområde is mapped to its parent mellanområde via `pri_to_mel.json` (96 pri → 36 mel)
+3. **Scale factor computation**: For each census age bin (e.g., "6-15 år"), the prognosis counts for ages 6–15 are summed in both the base and target years, and the ratio `target_sum / base_sum` gives the scale factor
+4. **Marginal scaling**: Census marginals (population, household position) are multiplied by the corresponding age-bin factor, then re-synthesized
+
+---
 
 ## Data Tables Used
 
