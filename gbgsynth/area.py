@@ -981,6 +981,48 @@ class GbgArea:
         """
         return self.to_dataframes()['households']
 
+    def export(self, format: str, output_path: str, **kwargs) -> str:
+        """
+        Export population to specified format for downstream simulation tools.
+        
+        Supported formats:
+        - "sweloadsim": SweLoadSim household energy simulation (JSON)
+        
+        Args:
+            format: Export format name (e.g., "sweloadsim")
+            output_path: Path for output file
+            **kwargs: Format-specific options passed to exporter
+                For "sweloadsim":
+                - config: SweLoadSimConfig instance (optional)
+            
+        Returns:
+            Path to created output file
+            
+        Raises:
+            ValueError: If format is not recognized
+            DataNotGeneratedError: If generate() hasn't been called
+            
+        Example:
+            >>> area.generate()
+            >>> area.export("sweloadsim", "haga.json")
+            
+            >>> # With custom config
+            >>> from gbgsynth.exporters import SweLoadSimConfig
+            >>> config = SweLoadSimConfig.future_2035()
+            >>> area.export("sweloadsim", "haga_2035.json", config=config)
+            
+            >>> # With seed for reproducibility
+            >>> config = SweLoadSimConfig(seed=42)
+            >>> area.export("sweloadsim", "haga_reproducible.json", config=config)
+        """
+        from gbgsynth.exporters import get_exporter
+        from pathlib import Path
+        
+        exporter = get_exporter(format, **kwargs)
+        result_path = exporter.export(self, Path(output_path))
+        logger.info(f"Exported {len(self.households)} households to {result_path} ({format} format)")
+        return str(result_path)
+
     def get_summary_statistics(self) -> dict:
         """
         Get summary statistics for the generated population.

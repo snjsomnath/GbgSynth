@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 # Data directory paths
 _DATA_DIR = Path(__file__).parent / "data"
 _PRI_SHP_DIR = _DATA_DIR / "pri_shp"
+_MEL_SHP_DIR = _DATA_DIR / "mel_shp"
 _AREAS_JSON = _DATA_DIR / "areas.json"
 _FOOTPRINTS_GPKG = _DATA_DIR / "footprints.gpkg"
 _FOOTPRINTS_DIR = _DATA_DIR / "footprints"
@@ -29,6 +30,12 @@ _FOOTPRINTS_DIR = _DATA_DIR / "footprints"
 PRI_SHAPEFILE_URL = (
     "https://goteborg.se/wps/wcm/connect/4b21c246-9f7c-4b9f-9360-262051792c62/"
     "Prim%C3%A4romr%C3%A5de_shp.zip?MOD=AJPERES"
+)
+
+# Download URL for intermediate area (mellanområde) shapefile from Gothenburg city
+MEL_SHAPEFILE_URL = (
+    "https://goteborg.se/wps/wcm/connect/f4bef1c9-e68a-4b8c-812e-66e6237c377f/"
+    "Mellanomr%C3%A5de_shp.zip?MOD=AJPERES"
 )
 
 # Required shapefile components
@@ -232,6 +239,204 @@ def cleanup_shapefile(target_dir: Optional[Path] = None) -> bool:
 
 
 # ============================================================================
+# Intermediate area (mellanområde) shapefile functions
+# ============================================================================
+
+def is_mel_shapefile_available() -> bool:
+    """
+    Check if the intermediate area (mellanområde) shapefile is available.
+    
+    Returns:
+        True if all required shapefile components exist, False otherwise.
+    """
+    if not _MEL_SHP_DIR.exists():
+        return False
+    
+    for ext in SHAPEFILE_EXTENSIONS:
+        if not (_MEL_SHP_DIR / f"mel{ext}").exists():
+            return False
+    
+    return True
+
+
+def download_mel_shapefile(
+    url: Optional[str] = None,
+    target_dir: Optional[Path] = None,
+    timeout: int = 30,
+    force: bool = False
+) -> bool:
+    """
+    Download and set up the intermediate area (mellanområde) shapefile from Gothenburg city website.
+    
+    Downloads the ZIP file, extracts it, renames files to standard names,
+    and organizes them in the correct directory structure.
+    
+    Args:
+        url: URL to download from (default: Gothenburg city website)
+        target_dir: Target directory for the shapefile (default: bundled data dir)
+        timeout: Request timeout in seconds
+        force: If True, re-download even if files already exist
+        
+    Returns:
+        True if download and setup succeeded, False otherwise.
+        
+    Raises:
+        requests.RequestException: If download fails
+        zipfile.BadZipFile: If the downloaded file is not a valid ZIP
+    """
+    url = url or MEL_SHAPEFILE_URL
+    target_dir = Path(target_dir) if target_dir else _MEL_SHP_DIR
+    
+    # Check if already available
+    if not force and is_mel_shapefile_available():
+        logger.info("Mellanområde shapefile already available, skipping download")
+        return True
+    
+    logger.info(f"Downloading intermediate area (mellanområde) shapefile from {url}")
+    
+    # Download the ZIP file
+    response = requests.get(url, timeout=timeout)
+    response.raise_for_status()
+    
+    # Create target directory
+    target_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Extract and process the ZIP file
+    with zipfile.ZipFile(io.BytesIO(response.content)) as zf:
+        # List contents to find the shapefile components
+        file_list = zf.namelist()
+        logger.debug(f"ZIP contents: {file_list}")
+        
+        # Find and extract shapefile components
+        extracted_files = _extract_and_rename_mel_shapefile(zf, file_list, target_dir)
+        
+    if not extracted_files:
+        logger.error("No shapefile components found in ZIP")
+        return False
+    
+    logger.info(f"Successfully extracted mellanområde shapefile to {target_dir}")
+    return True
+
+
+def _extract_and_rename_mel_shapefile(
+    zf: zipfile.ZipFile,
+    file_list: list,
+    target_dir: Path
+) -> list:
+    """
+    Extract mellanområde shapefile components from ZIP and rename to standard names.
+    
+    Args:
+        zf: Open ZipFile object
+        file_list: List of files in the ZIP
+        target_dir: Target directory for extraction
+        
+    Returns:
+        List of extracted file paths
+    """
+    extracted = []
+    
+    for ext in SHAPEFILE_EXTENSIONS:
+        # Find file with this extension (case-insensitive)
+        matching_files = [
+            f for f in file_list 
+            if f.lower().endswith(ext.lower()) and not f.startswith('__MACOSX')
+        ]
+        
+        if not matching_files:
+            logger.warning(f"No {ext} file found in ZIP")
+            continue
+        
+        # Use the first matching file
+        source_file = matching_files[0]
+        target_file = target_dir / f"mel{ext}"
+        
+        # Extract the file
+        with zf.open(source_file) as src:
+            content = src.read()
+            
+        with open(target_file, 'wb') as dst:
+            dst.write(content)
+        
+        extracted.append(target_file)
+        logger.debug(f"Extracted {source_file} -> {target_file}")
+    
+    return extracted
+
+
+def ensure_mel_shapefile_available(auto_download: bool = True) -> bool:
+    """
+    Ensure the intermediate area (mellanområde) shapefile is available, downloading if necessary.
+    
+    Args:
+        auto_download: If True, automatically download if not available
+        
+    Returns:
+        True if shapefile is available (or was successfully downloaded),
+        False otherwise.
+    """
+    if is_mel_shapefile_available():
+        return True
+    
+    if not auto_download:
+        logger.warning("Mellanområde shapefile not available and auto_download is disabled")
+        return False
+    
+    logger.info("Mellanområde shapefile not found, attempting to download...")
+    
+    try:
+        return download_mel_shapefile()
+    except requests.RequestException as e:
+        logger.error(f"Failed to download mellanområde shapefile: {e}")
+        return False
+    except zipfile.BadZipFile as e:
+        logger.error(f"Downloaded file is not a valid ZIP: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"Unexpected error downloading mellanområde shapefile: {e}")
+        return False
+
+
+def get_mel_shapefile_path() -> Optional[Path]:
+    """
+    Get the path to the intermediate area (mellanområde) shapefile.
+    
+    Returns:
+        Path to the .shp file if available, None otherwise.
+    """
+    shp_path = _MEL_SHP_DIR / "mel.shp"
+    if shp_path.exists():
+        return shp_path
+    return None
+
+
+def cleanup_mel_shapefile(target_dir: Optional[Path] = None) -> bool:
+    """
+    Remove the mellanområde shapefile directory and all its contents.
+    
+    Useful for testing or forcing a fresh download.
+    
+    Args:
+        target_dir: Directory to clean up (default: bundled data dir)
+        
+    Returns:
+        True if cleanup succeeded, False otherwise.
+    """
+    target_dir = Path(target_dir) if target_dir else _MEL_SHP_DIR
+    
+    if not target_dir.exists():
+        return True
+    
+    try:
+        shutil.rmtree(target_dir)
+        logger.info(f"Cleaned up mellanområde shapefile at {target_dir}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to cleanup mellanområde shapefile at {target_dir}: {e}")
+        return False
+
+
+# ============================================================================
 # Areas JSON functions
 # ============================================================================
 
@@ -408,21 +613,26 @@ def ensure_data_available(auto_download: bool = True, auto_generate: bool = True
     
     This is the main entry point for ensuring all required data is present.
     It will:
-    1. Download the shapefile if not present
-    2. Generate areas.json from the shapefile if not present
-    3. Download footprints if not present (requires dtcc package)
-    4. Generate neighbourhood heights if not present (requires dtcc package)
+    1. Download the primary area shapefile if not present
+    2. Download the intermediate area (mellanområde) shapefile if not present
+    3. Generate areas.json from the shapefile if not present
+    4. Download footprints if not present (requires dtcc package)
+    5. Generate neighbourhood heights if not present (requires dtcc package)
     
     Args:
-        auto_download: If True, download shapefile and footprints if not available
+        auto_download: If True, download shapefiles and footprints if not available
         auto_generate: If True, generate areas.json and heights if not available
         
     Returns:
         True if all data is available, False otherwise.
     """
-    # First ensure shapefile
+    # First ensure primary area shapefile
     if not ensure_shapefile_available(auto_download=auto_download):
         return False
+    
+    # Ensure mellanområde shapefile (optional but recommended)
+    if not ensure_mel_shapefile_available(auto_download=auto_download):
+        logger.warning("Mellanområde shapefile not available, some features may be limited")
     
     # Then ensure areas.json
     if not ensure_areas_json_available(auto_generate=auto_generate):

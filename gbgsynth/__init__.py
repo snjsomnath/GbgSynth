@@ -29,6 +29,14 @@ from gbgsynth.exceptions import (
 # Optional modules (import explicitly if needed)
 from gbgsynth import plotting
 from gbgsynth import validation
+from gbgsynth import exporters
+
+# Exporter convenience imports
+from gbgsynth.exporters import (
+    get_exporter,
+    list_exporters,
+    SweLoadSimConfig,
+)
 
 # Sanity checks for population validation
 from gbgsynth.sanity_checks import (
@@ -41,8 +49,10 @@ from gbgsynth.sanity_checks import (
 # Data utilities for managing bundled data
 from gbgsynth.data_utils import (
     download_pri_shapefile,
+    download_mel_shapefile,
     download_footprints,
     ensure_shapefile_available,
+    ensure_mel_shapefile_available,
     ensure_areas_json_available,
     ensure_footprints_available,
     ensure_neighbourhood_heights_available,
@@ -50,11 +60,13 @@ from gbgsynth.data_utils import (
     generate_areas_json,
     generate_neighbourhood_heights,
     is_shapefile_available,
+    is_mel_shapefile_available,
     is_areas_json_available,
     is_footprints_available,
     is_neighbourhood_heights_available,
     get_neighbourhood_heights_path,
     get_missing_neighbourhood_heights,
+    get_mel_shapefile_path,
 )
 
 __version__ = "0.3.0"
@@ -75,10 +87,17 @@ __all__ = [
     # Modules
     "plotting",
     "validation",
+    "exporters",
+    # Exporters
+    "get_exporter",
+    "list_exporters",
+    "SweLoadSimConfig",
     # Data utilities
     "download_pri_shapefile",
+    "download_mel_shapefile",
     "download_footprints",
     "ensure_shapefile_available",
+    "ensure_mel_shapefile_available",
     "ensure_areas_json_available",
     "ensure_footprints_available",
     "ensure_neighbourhood_heights_available",
@@ -86,9 +105,11 @@ __all__ = [
     "generate_areas_json",
     "generate_neighbourhood_heights",
     "is_shapefile_available",
+    "is_mel_shapefile_available",
     "is_areas_json_available",
     "is_footprints_available",
     "is_neighbourhood_heights_available",
     "get_neighbourhood_heights_path",
     "get_missing_neighbourhood_heights",
+    "get_mel_shapefile_path",
 ]
