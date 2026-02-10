@@ -201,3 +201,278 @@ class TestGbgAreaCodeHandling:
         """Test that area code is stored as string."""
         area = GbgArea(area_code="107", area_name="Haga", year=2023)
         assert isinstance(area.area_code, str)
+
+
+class TestCompareMedianIncome:
+    """Tests for _compare_median_income method."""
+
+    def _make_area_with_median(self, census_rows, individuals):
+        """Helper: build a GbgArea with pre-set marginals and individuals."""
+        area = GbgArea(area_code="107", area_name="Haga", year=2023)
+        area._is_generated = True
+        area.individuals = individuals
+        area.households = []
+        edu_df = pd.DataFrame(census_rows)
+        area._marginals = {
+            'population': pd.DataFrame(),
+            'household': pd.DataFrame(),
+            'household_position': None,
+            'income': None,
+            'education_level': edu_df,
+            'income_source': None,
+        }
+        return area
+
+    def test_returns_empty_dict_when_no_education_data(self):
+        """Median income comparison is empty when no education data."""
+        area = GbgArea(area_code="107", area_name="Haga", year=2023)
+        area._is_generated = True
+        area.individuals = []
+        area.households = []
+        area._marginals = {
+            'population': pd.DataFrame(),
+            'household': pd.DataFrame(),
+            'household_position': None,
+            'income': None,
+            'education_level': None,
+            'income_source': None,
+        }
+        result = area._compare_median_income()
+        assert result == {}
+
+    def test_basic_median_comparison(self):
+        """Census median vs synth median for a single group."""
+        census_rows = [
+            {'Tabellvärde': 'Medianinkomst', 'Kön': 'Man', 'Ålder': '25-34 år',
+             'Utbildningsnivå': 'Gymnasial utbildning', 'Antal': 300_000},
+        ]
+        agents = [
+            Agent(agent_id=1, age=28, sex='male', education='secondary', income=310_000),
+            Agent(agent_id=2, age=30, sex='male', education='secondary', income=290_000),
+            Agent(agent_id=3, age=32, sex='male', education='secondary', income=305_000),
+        ]
+        area = self._make_area_with_median(census_rows, agents)
+        result = area._compare_median_income()
+
+        assert result != {}
+        assert result['name'] == 'Median Income (SEK, informational)'
+        assert len(result['comparison']) == 1
+
+        row = result['comparison'][0]
+        assert row['actual'] == 300_000
+        # Synth median of [290000, 305000, 310000] = 305000
+        assert row['synth'] == 305_000
+
+    def test_multiple_groups(self):
+        """Two census groups produce two comparison rows."""
+        census_rows = [
+            {'Tabellvärde': 'Medianinkomst', 'Kön': 'Man', 'Ålder': '25-34 år',
+             'Utbildningsnivå': 'Gymnasial utbildning', 'Antal': 300_000},
+            {'Tabellvärde': 'Medianinkomst', 'Kön': 'Kvinna', 'Ålder': '25-34 år',
+             'Utbildningsnivå': 'Eftergymnasial utbildning', 'Antal': 350_000},
+        ]
+        agents = [
+            Agent(agent_id=1, age=28, sex='male', education='secondary', income=310_000),
+            Agent(agent_id=2, age=30, sex='female', education='post_secondary', income=360_000),
+        ]
+        area = self._make_area_with_median(census_rows, agents)
+        result = area._compare_median_income()
+        assert len(result['comparison']) == 2
+
+    def test_children_excluded(self):
+        """Children (age < 18) are not included in synth median."""
+        census_rows = [
+            {'Tabellvärde': 'Medianinkomst', 'Kön': 'Man', 'Ålder': '25-34 år',
+             'Utbildningsnivå': 'Gymnasial utbildning', 'Antal': 300_000},
+        ]
+        agents = [
+            Agent(agent_id=1, age=10, sex='male', education='secondary', income=0),
+            Agent(agent_id=2, age=28, sex='male', education='secondary', income=310_000),
+        ]
+        area = self._make_area_with_median(census_rows, agents)
+        result = area._compare_median_income()
+        row = result['comparison'][0]
+        # Only the adult (310k) should be in the synth median
+        assert row['synth'] == 310_000
+
+    def test_folkmaengd_rows_ignored(self):
+        """Folkmängd rows are not treated as median income values."""
+        census_rows = [
+            {'Tabellvärde': 'Folkmängd', 'Kön': 'Man', 'Ålder': '25-34 år',
+             'Utbildningsnivå': 'Gymnasial utbildning', 'Antal': 500},
+            {'Tabellvärde': 'Medianinkomst', 'Kön': 'Man', 'Ålder': '25-34 år',
+             'Utbildningsnivå': 'Gymnasial utbildning', 'Antal': 300_000},
+        ]
+        agents = [
+            Agent(agent_id=1, age=28, sex='male', education='secondary', income=310_000),
+        ]
+        area = self._make_area_with_median(census_rows, agents)
+        result = area._compare_median_income()
+        assert len(result['comparison']) == 1
+        assert result['comparison'][0]['actual'] == 300_000
+
+
+class TestCompareHhTypeChildren:
+    """Tests for _compare_hh_type_children joint validation."""
+
+    def _make_area(self, census_rows, households, individuals):
+        """Helper to create a GbgArea with hh_type_children marginal."""
+        area = GbgArea(area_code="107", area_name="107 Haga", year=2023)
+        area._is_generated = True
+        area.households = households
+        area.individuals = individuals
+        area._marginals = {
+            'population': pd.DataFrame(),
+            'household': pd.DataFrame(),
+            'household_position': None,
+            'income': None,
+            'education_level': None,
+            'income_source': None,
+            'hh_type_children': pd.DataFrame(census_rows) if census_rows else None,
+        }
+        return area
+
+    def test_empty_data_returns_empty(self):
+        """No HH type × children data returns empty dict."""
+        area = self._make_area(None, [], [])
+        result = area._compare_hh_type_children()
+        assert result == {}
+
+    def test_basic_comparison(self):
+        """Test basic HH type × children comparison."""
+        census_rows = [
+            {'Hushållstyp': 'Ensamstående', 'Antal barn 0-17 år': '0 barn', 'Antal': 50},
+            {'Hushållstyp': 'Ensamstående', 'Antal barn 0-17 år': '1 barn', 'Antal': 10},
+            {'Hushållstyp': 'Sammanboende', 'Antal barn 0-17 år': '0 barn', 'Antal': 30},
+            {'Hushållstyp': 'Sammanboende', 'Antal barn 0-17 år': '2 barn', 'Antal': 20},
+        ]
+        # Create synth households:
+        # 2 single adults (no children) → Ensamstående | 0 barn × 2
+        # 1 couple with 2 kids → Sammanboende | 2 barn × 1
+        adults = [
+            Agent(agent_id=1, age=30, sex='male', hh_role='single'),
+            Agent(agent_id=2, age=40, sex='female', hh_role='single'),
+            Agent(agent_id=3, age=35, sex='male', hh_role='cohabiting'),
+            Agent(agent_id=4, age=33, sex='female', hh_role='cohabiting'),
+            Agent(agent_id=5, age=8, sex='male', hh_role='child'),
+            Agent(agent_id=6, age=5, sex='female', hh_role='child'),
+        ]
+        adults[0].household_id = 1
+        adults[1].household_id = 2
+        for a in adults[2:]:
+            a.household_id = 3
+        households = [
+            Household(household_id=1, size=1, members=[adults[0]]),
+            Household(household_id=2, size=1, members=[adults[1]]),
+            Household(household_id=3, size=4, members=adults[2:]),
+        ]
+        area = self._make_area(census_rows, households, adults)
+        result = area._compare_hh_type_children()
+
+        assert result['name'] == 'HH Type × Children 0-17 (informational)'
+        assert len(result['comparison']) > 0
+        # Check that census key exists in comparison
+        keys = [r['category'] for r in result['comparison']]
+        assert 'Ensamstående | 0 barn' in keys
+
+    def test_four_plus_children(self):
+        """HH with 4+ children should map to '4 barn eller fler'."""
+        census_rows = [
+            {'Hushållstyp': 'Sammanboende', 'Antal barn 0-17 år': '4 barn eller fler', 'Antal': 5},
+        ]
+        children = [
+            Agent(agent_id=i, age=i + 3, sex='male', hh_role='child')
+            for i in range(1, 6)  # 5 children aged 4-8
+        ]
+        parents = [
+            Agent(agent_id=10, age=40, sex='male', hh_role='cohabiting'),
+            Agent(agent_id=11, age=38, sex='female', hh_role='cohabiting'),
+        ]
+        members = parents + children
+        for m in members:
+            m.household_id = 1
+        hh = Household(household_id=1, size=7, members=members)
+        area = self._make_area(census_rows, [hh], members)
+        result = area._compare_hh_type_children()
+        for row in result['comparison']:
+            if row['category'] == 'Sammanboende | 4 barn eller fler':
+                assert row['synth'] == 1
+                break
+        else:
+            pytest.fail("Did not find 4+ children category")
+
+
+class TestCompareJointRoleAgeSex:
+    """Tests for _compare_joint_role_age_sex validation."""
+
+    def _make_area(self, census_rows, individuals, households):
+        """Helper to create a GbgArea with household_position marginal."""
+        area = GbgArea(area_code="107", area_name="107 Haga", year=2023)
+        area._is_generated = True
+        area.individuals = individuals
+        area.households = households
+        area._marginals = {
+            'population': pd.DataFrame(),
+            'household': pd.DataFrame(),
+            'household_position': pd.DataFrame(census_rows) if census_rows else None,
+            'income': None,
+            'education_level': None,
+            'income_source': None,
+            'hh_type_children': None,
+        }
+        return area
+
+    def test_empty_data_returns_empty(self):
+        """No household position data returns empty dict."""
+        area = self._make_area(None, [], [])
+        result = area._compare_joint_role_age_sex()
+        assert result == {}
+
+    def test_basic_seven_categories(self):
+        """Test that the 7-category role comparison is produced."""
+        census_rows = [
+            {'Ålder': '25-34 år', 'Kön': 'Män', 'Hushållsställning': 'Person i gift par/registrerat partnerskap', 'Antal': 10},
+            {'Ålder': '25-34 år', 'Kön': 'Män', 'Hushållsställning': 'Personer i samboförhållande', 'Antal': 20},
+            {'Ålder': '25-34 år', 'Kön': 'Män', 'Hushållsställning': 'Ensamstående förälder', 'Antal': 5},
+            {'Ålder': '25-34 år', 'Kön': 'Män', 'Hushållsställning': 'Barn', 'Antal': 15},
+            {'Ålder': '25-34 år', 'Kön': 'Män', 'Hushållsställning': 'Ensamboende', 'Antal': 30},
+            {'Ålder': '25-34 år', 'Kön': 'Män', 'Hushållsställning': 'Ej ensamboende personer, övriga', 'Antal': 8},
+        ]
+        # Create synth individuals
+        ind1 = Agent(agent_id=1, age=28, sex='male', hh_role='cohabiting')
+        ind1.household_id = 1
+        ind2 = Agent(agent_id=2, age=30, sex='male', hh_role='single')
+        ind2.household_id = 2
+        hh1 = Household(household_id=1, size=2, members=[ind1])
+        hh2 = Household(household_id=2, size=1, members=[ind2])
+
+        area = self._make_area(census_rows, [ind1, ind2], [hh1, hh2])
+        result = area._compare_joint_role_age_sex()
+
+        assert 'Detailed HH Position' in result['name']
+        categories = [r['category'] for r in result['comparison']]
+        # Should have census categories (minus Uppgift saknas)
+        assert 'Ensamboende' in categories
+        assert 'Barn' in categories
+
+    def test_single_parent_detected(self):
+        """Test that single parent in multi-person HH is correctly classified."""
+        census_rows = [
+            {'Ålder': '35-44 år', 'Kön': 'Kvinnor', 'Hushållsställning': 'Ensamstående förälder', 'Antal': 10},
+            {'Ålder': '0-5 år', 'Kön': 'Män', 'Hushållsställning': 'Barn', 'Antal': 5},
+        ]
+        parent = Agent(agent_id=1, age=38, sex='female', hh_role='single')
+        parent.household_id = 1
+        child = Agent(agent_id=2, age=4, sex='male', hh_role='child')
+        child.household_id = 1
+        hh = Household(household_id=1, size=2, members=[parent, child])
+
+        area = self._make_area(census_rows, [parent, child], [hh])
+        result = area._compare_joint_role_age_sex()
+
+        for row in result['comparison']:
+            if row['category'] == 'Ensam förälder':
+                assert row['synth'] == 1
+                break
+        else:
+            pytest.fail("Did not find Ensam förälder in synth")

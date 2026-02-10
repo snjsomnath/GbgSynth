@@ -62,7 +62,9 @@ class PopulationSynthesizer:
         income_data: Optional[pd.DataFrame] = None,
         car_data: Optional[pd.DataFrame] = None,
         buildings: Optional[pd.DataFrame] = None,
-        household_position_data: Optional[pd.DataFrame] = None
+        household_position_data: Optional[pd.DataFrame] = None,
+        education_level_data: Optional[pd.DataFrame] = None,
+        income_source_data: Optional[pd.DataFrame] = None
     ) -> Tuple[List[Agent], List[Household]]:
         """
         Generate synthetic population from census marginals.
@@ -75,6 +77,11 @@ class PopulationSynthesizer:
             buildings: Optional DataFrame/GeoDataFrame with building footprints
             household_position_data: Optional DataFrame with detailed household
                       positions (including child role) by age/sex
+            education_level_data: Optional DataFrame with education level counts
+                      and income statistics by age group and sex
+                      (from 23_InkomsterUtbildning table)
+            income_source_data: Optional DataFrame with primary income source
+                      distribution by sex (from 20_HuvudInk table)
 
         Returns:
             Tuple of (agents, households)
@@ -92,11 +99,17 @@ class PopulationSynthesizer:
         
         logger.info(f"Matched {len(self.agents)} individuals to {len(self.households)} households")
 
-        # Assign socioeconomic attributes
-        if income_data is not None:
-            self._assign_income(income_data)
+        # Assign education levels from census distribution
+        if education_level_data is not None:
+            self._assign_education_level(education_level_data)
 
-        # Assign housing types (Hustyp) based on household size distribution
+        # Assign income using education-based median incomes if available
+        if income_data is not None:
+            self._assign_income(income_data, education_level_data)
+
+        # Assign primary income source
+        if income_source_data is not None:
+            self._assign_income_source(income_source_data)
         self.assign_housing_types(household_data)
 
         # Assign cars using propensity model with exact target
@@ -1257,27 +1270,41 @@ class PopulationSynthesizer:
             self.households.append(hh)
             self.next_household_id += 1
 
-    def _assign_income(self, income_data: pd.DataFrame) -> None:
+    def _assign_income(self, income_data: pd.DataFrame,
+                       education_level_data: Optional[pd.DataFrame] = None) -> None:
         """
-        Assign income to households and adult members based on income standard distribution.
+        Assign income to households and adult members.
         
-        The income data from SCB uses "Inkomststandard" categories which apply to
-        households, not individuals. Categories are:
-        - Low income ("har låg inkomststandard")
-        - Not low income ("inte har låg inkomststandard")
-        - Not part of year-round household ("Ingår ej i helårshushåll")
+        Uses two data sources:
+        1. Income standard data (10_InkStandard): determines low/not-low income
+           probability for each household
+        2. Education level data (23_InkomsterUtbildning): provides area-specific
+           median income by education × age × sex for realistic SEK amounts
+        
+        If education data with Medianinkomst is available, income is assigned
+        based on the agent's education level, age group, and sex. Otherwise,
+        falls back to crude decile-based estimates.
         
         Income is assigned to:
-        - Adults (age >= 18): Individual income based on household's income standard
+        - Adults (age >= 18): Individual income based on education/age/sex
         - Children (age < 18): No individual income (income = 0)
         
         Args:
             income_data: DataFrame with income standard distribution
+            education_level_data: Optional DataFrame with median income by
+                                 education × age × sex
         """
         # Calculate low income probability from actual data
         low_income_prob = self._calculate_low_income_probability(income_data)
-        
         logger.info(f"Low income probability from marginals: {low_income_prob:.1%}")
+        
+        # Build median income lookup from education data if available
+        median_income_table = self._build_median_income_table(education_level_data)
+        use_median = len(median_income_table) > 0
+        if use_median:
+            logger.info(f"Using area-specific median incomes ({len(median_income_table)} entries)")
+        else:
+            logger.info("Using decile-based income estimates (no median income data)")
 
         # Assign income at the household level, then distribute to adult members
         for household in self.households:
@@ -1289,20 +1316,144 @@ class PopulationSynthesizer:
             adults = [m for m in household.members if m.age >= 18]
             children = [m for m in household.members if m.age < 18]
             
-            # Assign income to adults only
+            # Assign income to adults
             for adult in adults:
                 if is_low_income:
                     adult.income_decile = random.randint(1, 2)
                 else:
                     adult.income_decile = random.randint(3, 10)
-                adult.income = self._estimate_income_from_decile(adult.income_decile)
                 adult.income_standard = income_standard
+                
+                # Try education-based median income first
+                if use_median:
+                    adult.income = self._estimate_income_from_median(
+                        adult, median_income_table, is_low_income
+                    )
+                else:
+                    adult.income = self._estimate_income_from_decile(adult.income_decile)
             
             # Children get no individual income
             for child in children:
                 child.income = 0
                 child.income_decile = None
                 child.income_standard = income_standard  # Inherit household's standard
+    
+    def _build_median_income_table(self, education_data: Optional[pd.DataFrame]) -> Dict:
+        """
+        Build a lookup table of median income by (age_group, sex, education_level).
+        
+        Extracts Medianinkomst rows from the education table and creates
+        a dictionary for fast lookup during income assignment.
+        
+        Args:
+            education_data: DataFrame with Tabellvärde, Ålder, Kön,
+                           Utbildningsnivå, Antal columns
+        
+        Returns:
+            Dict mapping (age_group_label, sex_en, edu_en) -> median_income_sek
+        """
+        if education_data is None or education_data.empty:
+            return {}
+        
+        if 'Tabellvärde' not in education_data.columns:
+            return {}
+        
+        median_data = education_data[education_data['Tabellvärde'] == 'Medianinkomst']
+        if median_data.empty:
+            return {}
+        
+        sex_map = {'Man': 'male', 'Kvinna': 'female'}
+        edu_map = {
+            'Förgymnasial utbildning': 'pre_secondary',
+            'Gymnasial utbildning': 'secondary',
+            'Eftergymnasial utbildning': 'post_secondary',
+            'Uppgift saknas': 'unknown',
+        }
+        
+        table = {}
+        for _, row in median_data.iterrows():
+            sex_sv = row.get('Kön', '')
+            sex_en = sex_map.get(sex_sv)
+            if not sex_en:
+                continue
+            
+            edu_sv = row.get('Utbildningsnivå', '')
+            edu_en = edu_map.get(edu_sv)
+            if not edu_en:
+                continue
+            
+            age_label = row.get('Ålder', '')
+            median_income = row.get('Antal', 0)  # Antal holds the value for all metrics
+            
+            if pd.notna(median_income) and median_income > 0:
+                table[(age_label, sex_en, edu_en)] = float(median_income)
+        
+        return table
+    
+    def _estimate_income_from_median(self, agent, median_income_table: Dict,
+                                      is_low_income: bool) -> float:
+        """
+        Estimate income for an agent using area-specific median income data.
+        
+        Looks up the median income for the agent's age group × sex × education
+        level, then applies randomness to create realistic variation.
+        
+        For low-income households, income is scaled down by 40-70%.
+        
+        Args:
+            agent: The Agent to estimate income for
+            median_income_table: Lookup dict (age_label, sex, edu) -> median_sek
+            is_low_income: Whether the household is flagged as low income
+        
+        Returns:
+            Estimated income in SEK
+        """
+        # Define age group boundaries matching the education table
+        age_groups = [
+            (18, 24, '18-24 år'),
+            (25, 34, '25-34 år'),
+            (35, 44, '35-44 år'),
+            (45, 54, '45-54 år'),
+            (55, 64, '55-64 år'),
+            (65, 74, '65-74 år'),
+            (75, 120, '75- år'),
+        ]
+        
+        # Find matching age group
+        age_label = None
+        for ag_min, ag_max, label in age_groups:
+            if ag_min <= agent.age <= ag_max:
+                age_label = label
+                break
+        
+        if age_label is None:
+            return self._estimate_income_from_decile(agent.income_decile or 5)
+        
+        edu = getattr(agent, 'education', None) or 'unknown'
+        key = (age_label, agent.sex, edu)
+        
+        median = median_income_table.get(key)
+        
+        if median is None:
+            # Try without education specificity
+            for edu_fallback in ['secondary', 'pre_secondary', 'post_secondary', 'unknown']:
+                fallback_key = (age_label, agent.sex, edu_fallback)
+                median = median_income_table.get(fallback_key)
+                if median:
+                    break
+        
+        if median is None:
+            return self._estimate_income_from_decile(agent.income_decile or 5)
+        
+        # Apply variation: ±30% around median (log-normal-ish)
+        variation = random.gauss(0, 0.15)  # ~15% std dev
+        income = median * (1 + variation)
+        
+        # Low income households get significantly less
+        if is_low_income:
+            income *= random.uniform(0.3, 0.6)
+        
+        return max(0, round(income))
 
     def _calculate_low_income_probability(self, income_data: pd.DataFrame) -> float:
         """Calculate the probability of low income from income standard data."""
@@ -1390,6 +1541,371 @@ class PopulationSynthesizer:
         if total > 0:
             return {k: v / total for k, v in dist.items()}
         return dist
+
+    def _assign_education_level(self, education_data: pd.DataFrame) -> None:
+        """
+        Assign education level to adult individuals based on census distributions.
+        
+        Uses the 23_InkomsterUtbildning table which provides population counts
+        (Folkmängd) by education level, age group, and sex for adults 18+.
+        
+        Education levels assigned:
+        - pre_secondary (Förgymnasial utbildning)
+        - secondary (Gymnasial utbildning) 
+        - post_secondary (Eftergymnasial utbildning)
+        - unknown (Uppgift saknas)
+        
+        Children (<18) get education='child'.
+        
+        The probability distribution is conditioned on age group × sex,
+        so the synthetic population should closely match the census
+        education level distribution.
+        
+        Args:
+            education_data: DataFrame with columns Ålder, Kön, Utbildningsnivå,
+                           Tabellvärde, Antal. Contains multiple metrics
+                           (Folkmängd, Medianinkomst, etc.) — we filter to
+                           Folkmängd for probability computation.
+        """
+        if education_data is None or education_data.empty:
+            logger.warning("No education level data available, skipping education assignment")
+            return
+        
+        # Filter to population counts only (not income statistics)
+        if 'Tabellvärde' in education_data.columns:
+            folk_data = education_data[education_data['Tabellvärde'] == 'Folkmängd'].copy()
+        else:
+            folk_data = education_data.copy()
+        
+        # Map Swedish education levels to internal values
+        edu_level_map = {
+            'Förgymnasial utbildning': 'pre_secondary',
+            'Gymnasial utbildning': 'secondary',
+            'Eftergymnasial utbildning': 'post_secondary',
+            'Uppgift saknas': 'unknown',
+        }
+        
+        # Map Swedish sex to internal values
+        sex_map = {'Man': 'male', 'Kvinna': 'female'}
+        
+        # Build age group boundaries from the data
+        # Age groups in the table: "18-24 år", "25-34 år", ..., "75- år"
+        age_groups = []
+        for ag in folk_data['Ålder'].unique():
+            ag_str = str(ag).replace(' år', '').strip()
+            if '-' in ag_str:
+                parts = ag_str.split('-')
+                if parts[1] == '':
+                    # Open-ended like "75-"
+                    age_groups.append((int(parts[0]), 120, ag))
+                else:
+                    age_groups.append((int(parts[0]), int(parts[1]), ag))
+        
+        # Build probability lookup: (age_group_label, sex) -> {edu_level: probability}
+        prob_table = {}
+        for sex_sv, sex_en in sex_map.items():
+            for _, ag_max, ag_label in age_groups:
+                subset = folk_data[
+                    (folk_data['Ålder'] == ag_label)
+                    & (folk_data['Kön'] == sex_sv)
+                ]
+                if subset.empty:
+                    continue
+                
+                counts = {}
+                for _, row in subset.iterrows():
+                    edu_sv = row['Utbildningsnivå']
+                    edu_en = edu_level_map.get(edu_sv, 'unknown')
+                    count = int(row['Antal']) if pd.notna(row['Antal']) else 0
+                    counts[edu_en] = count
+                
+                total = sum(counts.values())
+                if total > 0:
+                    probs = {k: v / total for k, v in counts.items()}
+                else:
+                    # Fallback: equal distribution
+                    n = len(counts)
+                    probs = {k: 1.0 / n for k in counts} if n > 0 else {}
+                
+                prob_table[(ag_label, sex_en)] = probs
+        
+        if not prob_table:
+            logger.warning("Could not build education probability table")
+            return
+        
+        def _find_age_group(age: int) -> Optional[str]:
+            """Find the matching age group label for a given age."""
+            for ag_min, ag_max, ag_label in sorted(age_groups):
+                if ag_min <= age <= ag_max:
+                    return ag_label
+            return None
+        
+        # Assign education to each agent
+        edu_levels = list(edu_level_map.values())
+        assigned = 0
+        for agent in self.agents:
+            if agent.age < 18:
+                agent.education = 'child'
+                continue
+            
+            ag_label = _find_age_group(agent.age)
+            key = (ag_label, agent.sex)
+            
+            probs = prob_table.get(key)
+            if probs:
+                levels = list(probs.keys())
+                weights = list(probs.values())
+                agent.education = random.choices(levels, weights=weights, k=1)[0]
+                assigned += 1
+            else:
+                # Fallback: use overall distribution for this sex
+                fallback_probs = {}
+                for (ag, sex), p in prob_table.items():
+                    if sex == agent.sex:
+                        for edu, prob in p.items():
+                            fallback_probs[edu] = fallback_probs.get(edu, 0) + prob
+                if fallback_probs:
+                    total = sum(fallback_probs.values())
+                    levels = list(fallback_probs.keys())
+                    weights = [fallback_probs[l] / total for l in levels]
+                    agent.education = random.choices(levels, weights=weights, k=1)[0]
+                    assigned += 1
+                else:
+                    agent.education = 'unknown'
+        
+        logger.info(f"Assigned education level to {assigned} adults")
+
+    # Age-based adjustment weights for income source assignment.
+    #
+    # The 20_HuvudInk_PRI.px table gives only sex-level marginals (no age
+    # breakdown).  These weights encode the strong age dependence that is
+    # inherent in the category definitions:
+    #   • Pension – by definition retirement income (inkomstpension,
+    #     garantipension, tjänstepension, …) → almost exclusively 65 +
+    #   • Studies – studiestöd, barnbidrag vid förlängd skolgång → 18–29
+    #   • Parental leave – föräldrapenning, tillfällig fp → peak 25–44
+    #   • Disability – aktivitetsersättning 19–29, sjukersättning 30–64
+    #   • Sickness – sjukpenning, rehab-penning → working-age
+    #   • Work – kontant bruttolön etc. → broad working-age
+    #   • Unemployment – a-kassa, aktivitetsstöd → working-age
+    #   • Financial support – ekonomiskt stöd → all ages, skewed young
+    #   • No income – kapitalinkomster, barnbidrag only, emigrated → any age
+    #
+    # Each weight is a relative multiplier applied to the sex-level
+    # baseline probability; the product is normalised per age × sex group.
+    _INCOME_SOURCE_AGE_WEIGHTS = {
+        # (min_age, max_age): {source: multiplier}
+        (20, 24): {
+            'work': 0.55, 'unemployment': 1.0, 'studies': 8.0, 'pension': 0.0,
+            'disability': 0.4, 'sickness': 0.3, 'parental_leave': 0.8,
+            'financial_support': 2.5, 'no_income': 1.5,
+        },
+        (25, 34): {
+            'work': 1.1, 'unemployment': 1.0, 'studies': 1.8, 'pension': 0.0,
+            'disability': 0.5, 'sickness': 0.7, 'parental_leave': 3.5,
+            'financial_support': 1.2, 'no_income': 1.0,
+        },
+        (35, 44): {
+            'work': 1.2, 'unemployment': 1.0, 'studies': 0.4, 'pension': 0.0,
+            'disability': 0.8, 'sickness': 1.0, 'parental_leave': 2.0,
+            'financial_support': 1.0, 'no_income': 0.8,
+        },
+        (45, 54): {
+            'work': 1.2, 'unemployment': 1.0, 'studies': 0.1, 'pension': 0.0,
+            'disability': 1.5, 'sickness': 1.3, 'parental_leave': 0.1,
+            'financial_support': 0.8, 'no_income': 0.8,
+        },
+        (55, 64): {
+            'work': 1.0, 'unemployment': 0.8, 'studies': 0.05, 'pension': 0.2,
+            'disability': 2.0, 'sickness': 1.5, 'parental_leave': 0.01,
+            'financial_support': 0.6, 'no_income': 0.8,
+        },
+        (65, 74): {
+            'work': 0.25, 'unemployment': 0.01, 'studies': 0.0, 'pension': 2.8,
+            'disability': 0.3, 'sickness': 0.1, 'parental_leave': 0.0,
+            'financial_support': 0.2, 'no_income': 0.5,
+        },
+        (75, 200): {
+            'work': 0.05, 'unemployment': 0.0, 'studies': 0.0, 'pension': 4.0,
+            'disability': 0.15, 'sickness': 0.05, 'parental_leave': 0.0,
+            'financial_support': 0.2, 'no_income': 0.4,
+        },
+    }
+
+    def _assign_income_source(self, income_source_data: pd.DataFrame) -> None:
+        """
+        Assign primary income source to adults based on census distributions.
+        
+        Uses the 20_HuvudInk_PRI.px table which provides **exact counts**
+        by primary income source and sex for adults aged 20+.
+        
+        Algorithm (deterministic quota allocation):
+        
+        1. Extract exact census counts per (sex, source) — e.g. 2,800 males
+           with "work", 850 males with "pension", etc.
+        2. Scale those counts proportionally to match the actual number of
+           synth agents per sex (census and synth may differ by a few %).
+        3. Compute an **age-based affinity score** for each agent × source,
+           using ``_INCOME_SOURCE_AGE_WEIGHTS``.  A 70-year-old gets a high
+           affinity for "pension" and near-zero for "studies".
+        4. For each source (from rarest to most common), greedily assign the
+           agents with the highest affinity, drawing exactly the target count.
+        5. The result matches the census sex-level marginal exactly while
+           distributing sources across ages realistically.
+        
+        Income source categories (9):
+        - work, unemployment, studies, pension, disability,
+          sickness, parental_leave, financial_support, no_income
+        
+        Children (<20) get income_source=None.
+        
+        Args:
+            income_source_data: DataFrame with columns Kön, 
+                               Huvudsaklig inkomstkälla, Antal.
+        """
+        if income_source_data is None or income_source_data.empty:
+            logger.warning("No income source data available, skipping")
+            return
+        
+        # Map Swedish income source names to internal values
+        source_map = {
+            'Ersättning för arbete': 'work',
+            'Ersättning vid arbetslöshet': 'unemployment',
+            'Ersättning för studier': 'studies',
+            'Pension': 'pension',
+            'Ersättning vid långvarigt nedsatt arbetsförmåga': 'disability',
+            'Ersättning vid sjukdom': 'sickness',
+            'Ersättning vid föräldraledighet eller närståendeomvårdnad': 'parental_leave',
+            'Ekonomiskt stöd': 'financial_support',
+            'Saknar ersättningar': 'no_income',
+        }
+        
+        # Map sex values
+        sex_map = {'Man': 'male', 'Kvinna': 'female'}
+        
+        # Find columns
+        source_col = None
+        for col in income_source_data.columns:
+            if 'inkomstkälla' in col.lower() or 'huvudsaklig' in col.lower():
+                source_col = col
+                break
+        if source_col is None:
+            logger.warning("Could not find income source column")
+            return
+        
+        sex_col = 'Kön' if 'Kön' in income_source_data.columns else None
+        if sex_col is None:
+            logger.warning("Could not find sex column in income source data")
+            return
+        
+        count_col = 'Antal' if 'Antal' in income_source_data.columns else income_source_data.columns[-1]
+        
+        # ── Step 1: Extract exact census counts per (sex, source) ──
+        census_counts = {}  # sex_en -> {source_en: count}
+        for sex_sv, sex_en in sex_map.items():
+            subset = income_source_data[income_source_data[sex_col] == sex_sv]
+            if subset.empty:
+                continue
+            counts = {}
+            for _, row in subset.iterrows():
+                src_sv = row[source_col]
+                src_en = source_map.get(src_sv, src_sv)
+                count = int(row[count_col]) if pd.notna(row[count_col]) else 0
+                counts[src_en] = counts.get(src_en, 0) + count
+            census_counts[sex_en] = counts
+        
+        if not census_counts:
+            logger.warning("Could not build income source count table")
+            return
+        
+        # Set children to None
+        for agent in self.agents:
+            if agent.age < 20:
+                agent.income_source = None
+        
+        # ── Step 2: Group adults by sex, scale census quotas ──
+        adults_by_sex = {}  # sex -> [agent, ...]
+        for agent in self.agents:
+            if agent.age >= 20:
+                adults_by_sex.setdefault(agent.sex, []).append(agent)
+        
+        assigned = 0
+        for sex_en, agents in adults_by_sex.items():
+            counts = census_counts.get(sex_en)
+            if not counts:
+                # No census data for this sex; fall back to uniform 'work'
+                for a in agents:
+                    a.income_source = 'work'
+                    assigned += 1
+                continue
+            
+            n_agents = len(agents)
+            census_total = sum(counts.values())
+            
+            # Scale census counts to match synth agent count
+            if census_total > 0 and census_total != n_agents:
+                scale = n_agents / census_total
+                quotas = {src: max(0, round(cnt * scale))
+                          for src, cnt in counts.items()}
+                # Fix rounding so sum == n_agents
+                diff = n_agents - sum(quotas.values())
+                if diff != 0:
+                    # Adjust the largest category
+                    largest = max(quotas, key=quotas.get)
+                    quotas[largest] += diff
+            else:
+                quotas = dict(counts)
+            
+            # ── Step 3: Compute age affinity scores ──
+            # For each agent, compute a score per source using age weights.
+            # Add small random jitter to break ties.
+            agent_scores = []  # [(agent_idx, {source: score})]
+            for i, agent in enumerate(agents):
+                scores = {}
+                # Find matching age band
+                matched_weights = None
+                for (age_min, age_max), aw in self._INCOME_SOURCE_AGE_WEIGHTS.items():
+                    if age_min <= agent.age <= age_max:
+                        matched_weights = aw
+                        break
+                
+                for src in quotas:
+                    if matched_weights:
+                        w = matched_weights.get(src, 1.0)
+                    else:
+                        w = 1.0
+                    # Score = weight + small jitter for randomness within band
+                    scores[src] = w + random.random() * 0.01
+                agent_scores.append((i, scores))
+            
+            # ── Step 4: Greedy allocation from rarest to most common ──
+            # Process rarest sources first so they get their best-fit agents.
+            source_order = sorted(quotas.keys(), key=lambda s: quotas[s])
+            
+            remaining = set(range(n_agents))  # indices of unassigned agents
+            
+            for src in source_order:
+                target = quotas[src]
+                if target <= 0:
+                    continue
+                
+                # Among remaining agents, pick the ones with highest score for src
+                candidates = [(idx, agent_scores[idx][1][src]) for idx in remaining]
+                candidates.sort(key=lambda x: x[1], reverse=True)
+                
+                chosen = candidates[:target]
+                for idx, _ in chosen:
+                    agents[idx].income_source = src
+                    remaining.discard(idx)
+                    assigned += 1
+            
+            # Any remaining agents (rounding edge case) get 'work'
+            for idx in remaining:
+                agents[idx].income_source = 'work'
+                assigned += 1
+        
+        logger.info(f"Assigned income source to {assigned} adults (20+) "
+                     f"using deterministic quota allocation with age affinity")
 
     def _validate_synthesis(self) -> None:
         """Validate and clean up the synthesized population."""

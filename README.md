@@ -1,6 +1,6 @@
 # GbgSynth - Synthetic Population Generator for Gothenburg
 
-![Tests](https://img.shields.io/badge/tests-348%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-364%20passed-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Areas](https://img.shields.io/badge/areas-96%20neighbourhoods-orange)
@@ -14,6 +14,9 @@ A modular Python library for procedurally generating synthetic populations using
 - **Bundled Data**: 96 neighbourhood names, codes, and boundaries included (no API calls to browse)
 - **Top-Down Synthesis**: Constrained household-first approach for accurate population generation
 - **Agent-Based Modeling**: Individual agents with demographics and socioeconomic attributes
+- **Education Level**: Area-specific education distribution by age × sex from census data
+- **Income Source**: Primary income source assignment (work, pension, studies, etc.) from census
+- **Realistic Income**: Median-income-based SEK amounts by education × age × sex
 - **Household Synthesis**: Relationship modeling with biological and age constraints
 - **Housing Type Integration**: Links households to building types (Småhus, Flerbostadshus)
 - **Dwelling Allocation**: Assigns households to dwellings with building footprint georeferencing
@@ -131,7 +134,7 @@ for name in GbgSynth.list_areas():
 
 ## Examples
 
-The `examples/` directory contains 14 numbered scripts progressing from basics to advanced usage:
+The `examples/` directory contains 15 numbered scripts progressing from basics to advanced usage:
 
 | # | Script | Description |
 |---|--------|-------------|
@@ -149,6 +152,7 @@ The `examples/` directory contains 14 numbered scripts progressing from basics t
 | 12 | `12_prognosis_scaling.py` | Scale population to a future year (2025–2032) |
 | 13 | `13_export_sweloadsim.py` | Export for SweLoadSim electricity simulation |
 | 14 | `14_direct_api.py` | Query the PxWeb API directly |
+| 15 | `15_synthesize_all_neighbourhoods.py` | Batch-synthesize all 96 areas with quality grading |
 
 Run any example:
 
@@ -204,7 +208,7 @@ cfg = SweLoadSimConfig(ev_adoption_rate=0.3, solar_adoption_rate=0.1)
 
 ### Interchange Schema
 
-The JSON export includes a `schema_version` field (currently `"1.0.0"`) and
+The JSON export includes a `schema_version` field (currently `"1.1.0"`) and
 follows the interchange schema at `schemas/gbgsynth_interchange_v1.schema.json`.
 Canonical enum values:
 
@@ -214,6 +218,8 @@ Canonical enum values:
 | `heating_type` | `DISTRICT_HEATING`, `HEAT_PUMP`, `DIRECT_ELECTRIC`, `WOOD_PELLET` |
 | `building_era` | `pre_1960`, `1960_1975`, `1976_1990`, `1991_2010`, `post_2010` |
 | `employment_status` | `FULL_TIME`, `PART_TIME`, `STUDENT`, `RETIRED` |
+| `education_level` | `pre_secondary`, `secondary`, `post_secondary`, `unknown`, `child` |
+| `income_source` | `work`, `unemployment`, `studies`, `pension`, `disability`, `sickness`, `parental_leave`, `financial_support`, `no_income` |
 
 ## Architecture
 
@@ -303,9 +309,11 @@ Individuals are placed into households following biological and structural const
 
 After placement, socioeconomic attributes are assigned:
 
-1. **Income**: Sample from decile distribution (`HuvudInk_PRI.px`) per household
-2. **Car ownership**: Already assigned in Phase 1 based on house type and size
-3. **Housing type**: Already assigned from census proportions
+1. **Education Level**: Sample from age × sex census distribution (`23_InkomsterUtbildning_PRI.px`)
+2. **Income**: Estimate from area-specific median income by education × age × sex, with low-income probability from `10_InkStandard_PRI.px`
+3. **Income Source**: Sample primary income source by sex (`20_HuvudInk_PRI.px`)
+4. **Car ownership**: Already assigned in Phase 1 based on house type and size
+5. **Housing type**: Already assigned from census proportions
 
 ---
 
@@ -330,11 +338,11 @@ GbgSynth has been validated across all 96 neighbourhoods of Gothenburg. The synt
 | Metric | Value | Description |
 |--------|-------|-------------|
 | **Median Correlation** | 0.993 | Pearson correlation between synthesized and census counts |
-| **Mean MAPE** | 8.2% | Mean Absolute Percentage Error across all categories |
-| **Quality Grade A** | 63 areas (66%) | Correlation ≥ 0.99 |
-| **Quality Grade B** | 12 areas (12%) | Correlation 0.98–0.99 |
-| **Quality Grade C** | 11 areas (11%) | Correlation 0.97–0.98 |
-| **Quality Grade D/F** | 10 areas (10%) | Correlation < 0.97 |
+| **Mean MAPE** | 6.8% | Mean Absolute Percentage Error across 7 comparison dimensions |
+| **Quality Grade A** | 20 areas (21%) | MAPE ≤ 5% |
+| **Quality Grade B** | 69 areas (72%) | MAPE 5–10% |
+| **Quality Grade C** | 5 areas (5%) | MAPE 10–15% |
+| **Quality Grade D/F** | 2 areas (2%) | MAPE > 15% |
 
 ### Validation by Dimension
 
@@ -345,7 +353,8 @@ GbgSynth has been validated across all 96 neighbourhoods of Gothenburg. The synt
 | **Household Role** | 25% | 100% | Challenging for some areas |
 | **Household Size** | 4.0% | 40% | Good overall fit |
 | **Housing Type** | 6.5% | 80% | Affected by rare categories |
-| **Income Decile** | 38% | 100% | Privacy suppression limits accuracy |
+| **Education Level** | 2.5% | 15% | Good match across 4 levels |
+| **Income Source** | 8.0% | 50% | Small categories have higher error |
 
 ### Example Validation Plots (Haga, Area 107)
 
@@ -382,7 +391,7 @@ report = validator.run_all_validations()
 
 2. **Privacy Suppression ("Sekretess")**: Small cells in census data are suppressed for privacy. This affects areas with small populations (< 1,000 residents) and rare demographic combinations, leading to mismatches that cannot be resolved.
 
-3. **Income Distribution**: Income data is heavily suppressed in the source tables. Current implementation samples uniformly from deciles, which may not reflect true income inequality.
+3. **Income Distribution**: Income amounts are estimated from area-specific median incomes by education level, age group, and sex. While more realistic than decile-based estimates, they remain approximations since the census only provides group-level medians, not full distributions.
 
 4. **Housing Type Matching**: Rare housing categories like "Specialbostad" (special housing) and "Uppgift saknas" (data missing) are underrepresented in synthesized output.
 
@@ -438,7 +447,9 @@ Scaling Haga (area 107) from 2024 to 2032, the prognosis projects population cha
 | `63_FolkmHHtypPRI.px` | Population by household type | Area, Age, Sex, HH Role |
 | `31_HHStorlHustyp_PRI.px` | Household size by building type | Area, Size, House Type |
 | `10_Bilar_PRI.px` | Car ownership | Area, Year |
-| `HuvudInk_PRI.px` | Income distribution | Area, Decile |
+| `10_InkStandard_PRI.px` | Income standard (low/not low) | Area, Age, Background |
+| `23_InkomsterUtbildning_PRI.px` | Education level & median income by age × sex | Area, Age, Sex, Education |
+| `20_HuvudInk_PRI.px` | Primary income source by sex | Area, Sex, Income Source |
 
 ## Bundled Data
 

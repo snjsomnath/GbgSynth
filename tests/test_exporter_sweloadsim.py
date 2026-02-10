@@ -262,6 +262,37 @@ class TestHouseholdConversion:
         assert abs(env["wall_area_m2"] - 4 * side * height) < 0.5
         assert abs(env["window_area_m2"] - floor_area * 0.15) < 0.5
 
+    def test_education_and_income_source_in_member(self, deterministic_config):
+        """Members with education/income_source should include them in output."""
+        hh = Household(household_id=99, size=1)
+        agent = Agent(agent_id=99, age=35, sex="male", status="employed",
+                      income_decile=7, education="post_secondary",
+                      income_source="work")
+        agent.income = 450000
+        hh.add_member(agent)
+
+        exporter = SweLoadSimExporter(config=deterministic_config)
+        result = exporter._convert_household(hh)
+        member = result["members"][0]
+
+        assert member["education_level"] == "post_secondary"
+        assert member["income_source"] == "work"
+        assert member["income_sek"] == 450000
+
+    def test_member_without_enrichment_fields(self, deterministic_config):
+        """Members without education/income_source should omit those keys."""
+        hh = Household(household_id=99, size=1)
+        agent = Agent(agent_id=99, age=10, sex="female")
+        hh.add_member(agent)
+
+        exporter = SweLoadSimExporter(config=deterministic_config)
+        result = exporter._convert_household(hh)
+        member = result["members"][0]
+
+        assert "education_level" not in member or member.get("education_level") is None
+        assert "income_source" not in member
+        assert "income_sek" not in member
+
 
 # ── Config Presets ────────────────────────────────────────────────────────────
 

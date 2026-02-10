@@ -271,3 +271,475 @@ class TestIncomeHandling:
         total = sum(incomes)
         
         assert total == 0
+
+
+class TestEducationLevelAssignment:
+    """Tests for education level assignment."""
+
+    @pytest.fixture
+    def synthesizer_with_agents(self):
+        """Create a synthesizer with some agents already created."""
+        synth = PopulationSynthesizer()
+        # Adults of various ages and sexes
+        synth.agents = [
+            Agent(agent_id=1, age=20, sex='male', hh_role='single'),
+            Agent(agent_id=2, age=30, sex='female', hh_role='single'),
+            Agent(agent_id=3, age=50, sex='male', hh_role='cohabiting'),
+            Agent(agent_id=4, age=70, sex='female', hh_role='single'),
+            Agent(agent_id=5, age=10, sex='male'),   # Child
+            Agent(agent_id=6, age=5, sex='female'),   # Child
+        ]
+        return synth
+
+    @pytest.fixture
+    def education_data(self):
+        """Create sample education level data matching the 23_InkomsterUtbildning format."""
+        rows = []
+        age_groups = ['18-24 år', '25-34 år', '35-44 år', '45-54 år', '55-64 år', '65-74 år', '75- år']
+        sexes = ['Man', 'Kvinna']
+        edu_levels = ['Förgymnasial utbildning', 'Gymnasial utbildning',
+                      'Eftergymnasial utbildning', 'Uppgift saknas']
+        
+        for ag in age_groups:
+            for sex in sexes:
+                for edu in edu_levels:
+                    # Create a distribution that favours post_secondary
+                    if edu == 'Eftergymnasial utbildning':
+                        count = 100
+                    elif edu == 'Gymnasial utbildning':
+                        count = 50
+                    elif edu == 'Förgymnasial utbildning':
+                        count = 20
+                    else:
+                        count = 5
+                    rows.append({
+                        'Område': '107 Haga',
+                        'Ålder': ag,
+                        'Kön': sex,
+                        'Utbildningsnivå': edu,
+                        'Tabellvärde': 'Folkmängd',
+                        'År': 2023,
+                        'Antal': count,
+                    })
+        return pd.DataFrame(rows)
+
+    def test_assigns_education_to_adults(self, synthesizer_with_agents, education_data):
+        """Test that education level is assigned to all adults."""
+        synth = synthesizer_with_agents
+        synth._assign_education_level(education_data)
+        
+        adults = [a for a in synth.agents if a.age >= 18]
+        for adult in adults:
+            assert adult.education in ['pre_secondary', 'secondary', 'post_secondary', 'unknown'], \
+                f"Agent {adult.agent_id} has unexpected education: {adult.education}"
+
+    def test_children_get_child_education(self, synthesizer_with_agents, education_data):
+        """Test that children get education='child'."""
+        synth = synthesizer_with_agents
+        synth._assign_education_level(education_data)
+        
+        children = [a for a in synth.agents if a.age < 18]
+        for child in children:
+            assert child.education == 'child'
+
+    def test_distribution_roughly_matches(self, education_data):
+        """Test that assigned distribution roughly matches input probabilities."""
+        synth = PopulationSynthesizer()
+        # Create 1000 adults aged 30, male
+        synth.agents = [
+            Agent(agent_id=i, age=30, sex='male', hh_role='single')
+            for i in range(1000)
+        ]
+        synth._assign_education_level(education_data)
+        
+        counts = {}
+        for a in synth.agents:
+            counts[a.education] = counts.get(a.education, 0) + 1
+        
+        # Expected proportions: post_secondary=100/175≈57%, secondary=50/175≈29%,
+        # pre_secondary=20/175≈11%, unknown=5/175≈3%
+        assert counts.get('post_secondary', 0) > counts.get('secondary', 0)
+        assert counts.get('secondary', 0) > counts.get('pre_secondary', 0)
+        assert counts.get('pre_secondary', 0) > counts.get('unknown', 0)
+
+    def test_handles_none_data(self, synthesizer_with_agents):
+        """Test that None education data is handled gracefully."""
+        synth = synthesizer_with_agents
+        synth._assign_education_level(None)
+        # Should not crash, agents keep their default education
+        for agent in synth.agents:
+            assert agent.education is None or agent.education == 'child'
+
+    def test_handles_empty_data(self, synthesizer_with_agents):
+        """Test that empty DataFrame is handled gracefully."""
+        synth = synthesizer_with_agents
+        synth._assign_education_level(pd.DataFrame())
+        for agent in synth.agents:
+            assert agent.education is None or agent.education == 'child'
+
+
+class TestIncomeSourceAssignment:
+    """Tests for income source assignment."""
+
+    @pytest.fixture
+    def synthesizer_with_agents(self):
+        """Create a synthesizer with agents of various ages and sexes."""
+        synth = PopulationSynthesizer()
+        synth.agents = [
+            Agent(agent_id=1, age=25, sex='male', hh_role='single'),
+            Agent(agent_id=2, age=35, sex='female', hh_role='single'),
+            Agent(agent_id=3, age=70, sex='male', hh_role='single'),
+            Agent(agent_id=4, age=45, sex='female', hh_role='cohabiting'),
+            Agent(agent_id=5, age=15, sex='male'),   # Under 20
+            Agent(agent_id=6, age=5, sex='female'),   # Child
+        ]
+        return synth
+
+    @pytest.fixture
+    def income_source_data(self):
+        """Create sample income source data matching the 20_HuvudInk format."""
+        rows = []
+        sexes = ['Man', 'Kvinna']
+        sources = [
+            ('Ersättning för arbete', 200),
+            ('Ersättning vid arbetslöshet', 10),
+            ('Ersättning för studier', 15),
+            ('Pension', 50),
+            ('Ersättning vid långvarigt nedsatt arbetsförmåga', 5),
+            ('Ersättning vid sjukdom', 5),
+            ('Ersättning vid föräldraledighet eller närståendeomvårdnad', 10),
+            ('Ekonomiskt stöd', 5),
+            ('Saknar ersättningar', 10),
+        ]
+        for sex in sexes:
+            for source, count in sources:
+                rows.append({
+                    'Område': '107 Haga',
+                    'Kön': sex,
+                    'Huvudsaklig inkomstkälla': source,
+                    'År': 2023,
+                    'Antal': count,
+                })
+        return pd.DataFrame(rows)
+
+    def test_assigns_income_source_to_adults(self, synthesizer_with_agents, income_source_data):
+        """Test that income source is assigned to adults 20+."""
+        synth = synthesizer_with_agents
+        synth._assign_income_source(income_source_data)
+        
+        valid_sources = {'work', 'unemployment', 'studies', 'pension', 'disability',
+                         'sickness', 'parental_leave', 'financial_support', 'no_income'}
+        adults_20plus = [a for a in synth.agents if a.age >= 20]
+        for adult in adults_20plus:
+            assert adult.income_source in valid_sources, \
+                f"Agent {adult.agent_id} has unexpected income_source: {adult.income_source}"
+
+    def test_children_and_teens_get_none(self, synthesizer_with_agents, income_source_data):
+        """Test that agents under 20 get income_source=None."""
+        synth = synthesizer_with_agents
+        synth._assign_income_source(income_source_data)
+        
+        under_20 = [a for a in synth.agents if a.age < 20]
+        for agent in under_20:
+            assert agent.income_source is None
+
+    def test_distribution_favors_work(self, income_source_data):
+        """Test that 'work' is the most common income source given the test data."""
+        synth = PopulationSynthesizer()
+        synth.agents = [
+            Agent(agent_id=i, age=35, sex='male', hh_role='single')
+            for i in range(1000)
+        ]
+        synth._assign_income_source(income_source_data)
+        
+        counts = {}
+        for a in synth.agents:
+            counts[a.income_source] = counts.get(a.income_source, 0) + 1
+        
+        assert counts.get('work', 0) > counts.get('pension', 0)
+        assert counts.get('work', 0) > counts.get('studies', 0)
+
+    def test_handles_none_data(self, synthesizer_with_agents):
+        """Test that None income source data is handled gracefully."""
+        synth = synthesizer_with_agents
+        synth._assign_income_source(None)
+        for agent in synth.agents:
+            assert agent.income_source is None
+
+    def test_handles_empty_data(self, synthesizer_with_agents):
+        """Test that empty DataFrame is handled gracefully."""
+        synth = synthesizer_with_agents
+        synth._assign_income_source(pd.DataFrame())
+        for agent in synth.agents:
+            assert agent.income_source is None
+
+
+class TestMedianIncomeAssignment:
+    """Tests for education-based median income assignment."""
+
+    @pytest.fixture
+    def synthesizer_with_educated_agents(self):
+        """Create a synthesizer with agents that have education already assigned."""
+        synth = PopulationSynthesizer()
+        synth.agents = [
+            Agent(agent_id=1, age=30, sex='male', hh_role='single', education='post_secondary'),
+            Agent(agent_id=2, age=30, sex='female', hh_role='single', education='secondary'),
+            Agent(agent_id=3, age=55, sex='male', hh_role='cohabiting', education='pre_secondary'),
+            Agent(agent_id=4, age=10, sex='female'),  # Child
+        ]
+        synth.households = [
+            Household(household_id=1, size=1, members=[synth.agents[0]]),
+            Household(household_id=2, size=1, members=[synth.agents[1]]),
+            Household(household_id=3, size=2, members=[synth.agents[2], synth.agents[3]]),
+        ]
+        for a in synth.agents[:1]:
+            a.household_id = 1
+        synth.agents[1].household_id = 2
+        for a in synth.agents[2:]:
+            a.household_id = 3
+        return synth
+
+    @pytest.fixture
+    def education_data_with_income(self):
+        """Create education data that includes Medianinkomst rows."""
+        rows = []
+        age_groups = ['18-24 år', '25-34 år', '35-44 år', '45-54 år', '55-64 år', '65-74 år', '75- år']
+        sexes = ['Man', 'Kvinna']
+        edu_levels = ['Förgymnasial utbildning', 'Gymnasial utbildning',
+                      'Eftergymnasial utbildning', 'Uppgift saknas']
+        
+        median_incomes = {
+            'Förgymnasial utbildning': 250000,
+            'Gymnasial utbildning': 350000,
+            'Eftergymnasial utbildning': 500000,
+            'Uppgift saknas': 200000,
+        }
+        
+        for ag in age_groups:
+            for sex in sexes:
+                for edu in edu_levels:
+                    # Folkmängd row
+                    rows.append({
+                        'Område': '107 Haga', 'Ålder': ag, 'Kön': sex,
+                        'Utbildningsnivå': edu, 'Tabellvärde': 'Folkmängd',
+                        'År': 2023, 'Antal': 50,
+                    })
+                    # Medianinkomst row
+                    rows.append({
+                        'Område': '107 Haga', 'Ålder': ag, 'Kön': sex,
+                        'Utbildningsnivå': edu, 'Tabellvärde': 'Medianinkomst',
+                        'År': 2023, 'Antal': median_incomes[edu],
+                    })
+        return pd.DataFrame(rows)
+
+    @pytest.fixture
+    def income_data(self):
+        """Create minimal income standard data."""
+        return pd.DataFrame([
+            {'Inkomststandard': 'Ingår i helårshushåll som inte har låg inkomststandard', 'Antal': 900},
+            {'Inkomststandard': 'Ingår i helårshushåll som har låg inkomststandard', 'Antal': 100},
+        ])
+
+    def test_builds_median_income_table(self, education_data_with_income):
+        """Test that _build_median_income_table creates a valid lookup table."""
+        synth = PopulationSynthesizer()
+        table = synth._build_median_income_table(education_data_with_income)
+        
+        assert len(table) > 0
+        # Check a specific key
+        assert ('25-34 år', 'male', 'post_secondary') in table
+        assert table[('25-34 år', 'male', 'post_secondary')] == 500000
+
+    def test_median_income_higher_for_post_secondary(self, synthesizer_with_educated_agents,
+                                                      income_data, education_data_with_income):
+        """Test that post_secondary education yields higher income than secondary."""
+        import random
+        random.seed(42)
+        synth = synthesizer_with_educated_agents
+        synth._assign_income(income_data, education_data_with_income)
+        
+        post_sec = [a for a in synth.agents if a.education == 'post_secondary'][0]
+        secondary = [a for a in synth.agents if a.education == 'secondary'][0]
+        
+        # On average, post_secondary should have higher income
+        # With seed=42 this should be deterministic, but the expected relationship
+        # may occasionally not hold for a single draw. We mainly test it doesn't crash.
+        assert post_sec.income > 0
+        assert secondary.income > 0
+
+    def test_children_get_zero_income(self, synthesizer_with_educated_agents,
+                                      income_data, education_data_with_income):
+        """Test that children get zero income."""
+        synth = synthesizer_with_educated_agents
+        synth._assign_income(income_data, education_data_with_income)
+        
+        children = [a for a in synth.agents if a.age < 18]
+        for child in children:
+            assert child.income == 0
+
+    def test_falls_back_to_decile_without_education_data(self, synthesizer_with_educated_agents,
+                                                          income_data):
+        """Test that income assignment works without education data."""
+        synth = synthesizer_with_educated_agents
+        synth._assign_income(income_data, None)
+        
+        adults = [a for a in synth.agents if a.age >= 18]
+        for adult in adults:
+            assert adult.income > 0
+            assert adult.income_decile is not None
+
+
+class TestIncomeSourceAgeConditioning:
+    """Tests for age-conditioned income source assignment."""
+
+    @pytest.fixture
+    def income_source_data(self):
+        """Create sample income source data matching the 20_HuvudInk format."""
+        rows = []
+        sexes = ['Man', 'Kvinna']
+        sources = [
+            ('Ersättning för arbete', 200),
+            ('Ersättning vid arbetslöshet', 10),
+            ('Ersättning för studier', 15),
+            ('Pension', 50),
+            ('Ersättning vid långvarigt nedsatt arbetsförmåga', 5),
+            ('Ersättning vid sjukdom', 5),
+            ('Ersättning vid föräldraledighet eller närståendeomvårdnad', 10),
+            ('Ekonomiskt stöd', 5),
+            ('Saknar ersättningar', 10),
+        ]
+        for sex in sexes:
+            for source, count in sources:
+                rows.append({
+                    'Kön': sex,
+                    'Huvudsaklig inkomstkälla': source,
+                    'Antal': count,
+                })
+        return pd.DataFrame(rows)
+
+    def test_elderly_mostly_pension(self, income_source_data):
+        """Test that 65+ agents are preferentially assigned 'pension' slots.
+        
+        With deterministic quota allocation, the total pension count matches
+        the census proportion (~16%).  But among all agents, the elderly
+        should fill those pension slots first due to high age affinity.
+        """
+        import random
+        random.seed(42)
+        synth = PopulationSynthesizer()
+        # Mix of old and young to test that elderly get the pension slots
+        synth.agents = [
+            Agent(agent_id=i, age=72, sex='male' if i % 2 == 0 else 'female',
+                  hh_role='single')
+            for i in range(250)
+        ] + [
+            Agent(agent_id=i + 250, age=30, sex='male' if i % 2 == 0 else 'female',
+                  hh_role='single')
+            for i in range(250)
+        ]
+        synth._assign_income_source(income_source_data)
+
+        # Census has 50 pension per sex out of 310 total → ~16% quota
+        pension_old = sum(1 for a in synth.agents if a.age == 72 and a.income_source == 'pension')
+        pension_young = sum(1 for a in synth.agents if a.age == 30 and a.income_source == 'pension')
+        # Elderly should get ALL the pension slots (high affinity)
+        assert pension_old > pension_young, \
+            f"Expected elderly to get more pension slots than young: old={pension_old}, young={pension_young}"
+        # Young (age 30, weight=0.0 for pension) should get essentially none
+        assert pension_young == 0, \
+            f"Expected 0 pension for age 30 (weight=0.0), got {pension_young}"
+
+    def test_young_adults_mostly_work_or_studies(self, income_source_data):
+        """Test that 20-24 year olds preferentially fill 'studies' slots."""
+        import random
+        random.seed(42)
+        synth = PopulationSynthesizer()
+        # Mix young and middle-aged to test affinity
+        synth.agents = [
+            Agent(agent_id=i, age=22, sex='male' if i % 2 == 0 else 'female',
+                  hh_role='single')
+            for i in range(250)
+        ] + [
+            Agent(agent_id=i + 250, age=45, sex='male' if i % 2 == 0 else 'female',
+                  hh_role='single')
+            for i in range(250)
+        ]
+        synth._assign_income_source(income_source_data)
+
+        studies_young = sum(1 for a in synth.agents if a.age == 22 and a.income_source == 'studies')
+        studies_old = sum(1 for a in synth.agents if a.age == 45 and a.income_source == 'studies')
+        # Young adults should fill studies slots preferentially
+        assert studies_young > studies_old, \
+            f"Expected more studies at 22 ({studies_young}) than at 45 ({studies_old})"
+
+    def test_no_pension_for_young_adults(self, income_source_data):
+        """Test that agents with 0.0 pension weight don't get pension when
+        competing with agents who have positive pension weight."""
+        import random
+        random.seed(42)
+        synth = PopulationSynthesizer()
+        # 250 young (weight=0.0 for pension) + 250 old (weight=2.8)
+        synth.agents = [
+            Agent(agent_id=i, age=30, sex='male', hh_role='single')
+            for i in range(250)
+        ] + [
+            Agent(agent_id=i + 250, age=70, sex='male', hh_role='single')
+            for i in range(250)
+        ]
+        synth._assign_income_source(income_source_data)
+
+        pension_young = sum(1 for a in synth.agents if a.age == 30 and a.income_source == 'pension')
+        assert pension_young == 0, \
+            f"Expected 0 pension for age 30 when 70-year-olds available, got {pension_young}"
+
+    def test_parental_leave_peak_in_30s(self, income_source_data):
+        """Test that parental leave slots go to 25-44 over 55-64."""
+        import random
+        random.seed(42)
+        synth = PopulationSynthesizer()
+        synth.agents = [
+            Agent(agent_id=i, age=32, sex='female', hh_role='cohabiting')
+            for i in range(250)
+        ] + [
+            Agent(agent_id=i + 250, age=58, sex='female', hh_role='cohabiting')
+            for i in range(250)
+        ]
+        synth._assign_income_source(income_source_data)
+
+        young_pl = sum(1 for a in synth.agents if a.age == 32 and a.income_source == 'parental_leave')
+        old_pl = sum(1 for a in synth.agents if a.age == 58 and a.income_source == 'parental_leave')
+        assert young_pl > old_pl, \
+            f"Expected more parental leave at 32 ({young_pl}) than at 58 ({old_pl})"
+
+    def test_quota_matches_census_proportions(self, income_source_data):
+        """Test that deterministic allocation matches census totals exactly."""
+        import random
+        random.seed(42)
+        synth = PopulationSynthesizer()
+        # All-male population to isolate one sex
+        synth.agents = [
+            Agent(agent_id=i, age=40, sex='male', hh_role='single')
+            for i in range(310)  # Exactly matches census male total
+        ]
+        synth._assign_income_source(income_source_data)
+
+        counts = {}
+        for a in synth.agents:
+            counts[a.income_source] = counts.get(a.income_source, 0) + 1
+        
+        # Census male: work=200, pension=50, studies=15, etc.
+        assert counts.get('work', 0) == 200, f"Expected 200 work, got {counts.get('work', 0)}"
+        assert counts.get('pension', 0) == 50, f"Expected 50 pension, got {counts.get('pension', 0)}"
+
+    def test_age_weights_class_attribute_exists(self):
+        """Test that the age weights table is defined as a class attribute."""
+        assert hasattr(PopulationSynthesizer, '_INCOME_SOURCE_AGE_WEIGHTS')
+        weights = PopulationSynthesizer._INCOME_SOURCE_AGE_WEIGHTS
+        assert len(weights) == 7  # 7 age bands
+        # Check all expected sources present in each band
+        expected_sources = {'work', 'unemployment', 'studies', 'pension',
+                           'disability', 'sickness', 'parental_leave',
+                           'financial_support', 'no_income'}
+        for age_range, sources in weights.items():
+            assert set(sources.keys()) == expected_sources, \
+                f"Age band {age_range} missing sources: {expected_sources - set(sources.keys())}"

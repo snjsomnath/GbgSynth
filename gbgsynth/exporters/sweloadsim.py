@@ -692,7 +692,7 @@ class SweLoadSimExporter(BaseExporter):
         self._rng = random.Random(self.config.seed)
         
         data = {
-            "schema_version": "1.0.0",
+            "schema_version": "1.1.0",
             "metadata": self._build_metadata(area),
             "export_config": self._serialize_config(),
             "households": [
@@ -879,12 +879,23 @@ class SweLoadSimExporter(BaseExporter):
     
     def _convert_agent(self, agent: "Agent") -> Dict[str, Any]:
         """Convert a GbgSynth Agent to SweLoadSim member format."""
-        return {
+        member = {
             "age_group": self._age_to_bin(agent.age),
             "age_exact": agent.age,
             "sex": agent.sex,
             "status": self.STATUS_MAP.get(agent.status, "FULL_TIME"),
         }
+        # Optional enrichment fields (v1.1.0)
+        education = getattr(agent, 'education', None)
+        if education:
+            member["education_level"] = education
+        income_source = getattr(agent, 'income_source', None)
+        if income_source:
+            member["income_source"] = income_source
+        income = getattr(agent, 'income', None)
+        if income and income > 0:
+            member["income_sek"] = round(income)
+        return member
     
     def _age_to_bin(self, age: int) -> str:
         """Map exact age to SweLoadSim age group."""

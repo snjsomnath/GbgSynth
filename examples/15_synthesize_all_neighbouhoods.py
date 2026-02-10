@@ -179,14 +179,31 @@ def generate_error_report(
             total_synth += row['synth']
             max_abs_error_pct = max(max_abs_error_pct, abs(row['error_pct']))
         
-        # Subtotals
+        # Subtotals / averages
         lines.append("-" * 75)
-        total_diff = total_synth - total_actual
-        total_error_pct = (total_diff / total_actual * 100) if total_actual > 0 else 0
-        lines.append(
-            f"{'TOTAL':<35} {total_actual:>10,} {total_synth:>10,} "
-            f"{total_diff:>+10,} {total_error_pct:>9.1f}%"
-        )
+        is_sek_comparison = key == 'median_income'
+        is_informational = key in ('median_income', 'hh_type_children', 'joint_role_age_sex')
+        n_rows = len(sorted_rows)
+        if is_sek_comparison and n_rows > 0:
+            # For SEK comparisons, show average rather than sum
+            avg_actual = total_actual // n_rows
+            avg_synth = total_synth // n_rows
+            avg_diff = avg_synth - avg_actual
+            avg_error_pct = (avg_diff / avg_actual * 100) if avg_actual > 0 else 0
+            lines.append(
+                f"{'AVERAGE':<35} {avg_actual:>10,} {avg_synth:>10,} "
+                f"{avg_diff:>+10,} {avg_error_pct:>9.1f}%"
+            )
+        else:
+            total_diff = total_synth - total_actual
+            total_error_pct = (total_diff / total_actual * 100) if total_actual > 0 else 0
+            lines.append(
+                f"{'TOTAL':<35} {total_actual:>10,} {total_synth:>10,} "
+                f"{total_diff:>+10,} {total_error_pct:>9.1f}%"
+            )
+        
+        if is_informational:
+            lines.append("  (informational — excluded from MAPE grade)")
         
         # Quality Assessment for this dimension
         if max_abs_error_pct > 25:

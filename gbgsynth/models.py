@@ -137,6 +137,7 @@ class Agent:
         status: Employment/life status (e.g., 'employed', 'student', 'retired')
         income: Annual income in SEK (can be None for children/students)
         income_decile: Income decile (1-10) for regional comparison
+        income_source: Primary income source (e.g., 'work', 'pension', 'studies')
         education: Educational attainment level
         household_id: Reference to the household this agent belongs to
     """
@@ -148,6 +149,7 @@ class Agent:
     status: Optional[str] = None
     income: Optional[float] = None
     income_decile: Optional[int] = None
+    income_source: Optional[str] = None
     education: Optional[str] = None
     household_id: Optional[int] = None
 
@@ -243,6 +245,7 @@ class Agent:
             'status': self.status,
             'income': self.income,
             'income_decile': self.income_decile,
+            'income_source': self.income_source,
             'education': self.education,
             'household_id': self.household_id
         }
