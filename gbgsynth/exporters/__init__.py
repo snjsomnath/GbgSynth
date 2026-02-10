@@ -45,7 +45,7 @@ def get_exporter(name: str, **kwargs) -> BaseExporter:
         ValueError: If exporter name is not recognized
         
     Example:
-        >>> exporter = get_exporter("sweloadsim", config=SweLoadSimConfig.gothenburg_2024())
+        >>> exporter = get_exporter("sweloadsim", config=SweLoadSimConfig.swedish_2024())
         >>> exporter.export(area, "output.json")
     """
     if name not in EXPORTERS:

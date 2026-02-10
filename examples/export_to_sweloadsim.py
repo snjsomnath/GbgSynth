@@ -54,13 +54,13 @@ def main():
     print(f"   Saved to: {output_file}")
     
     # =========================================================================
-    # Example 2: Regional preset - Gothenburg specific
+    # Example 2: Year-matched preset via for_year()
     # =========================================================================
-    print("\n3. Export with Gothenburg-specific configuration...")
+    print("\n3. Export with year-matched configuration (for_year)...")
     
-    config_gbg = SweLoadSimConfig.gothenburg_2024()
-    output_file = OUTPUT_DIR / "haga_gothenburg.json"
-    haga.export("sweloadsim", output_file, config=config_gbg)
+    config_matched = SweLoadSimConfig.for_year(2030)
+    output_file = OUTPUT_DIR / "haga_2030_matched.json"
+    haga.export("sweloadsim", output_file, config=config_matched)
     print(f"   Saved to: {output_file}")
     
     # =========================================================================
@@ -137,13 +137,10 @@ def main():
     print("=" * 70)
     presets = [
         ("swedish_2024", "Swedish national averages"),
-        ("gothenburg_2024", "Gothenburg (high district heating)"),
-        ("stockholm_2024", "Stockholm (high EV adoption)"),
-        ("malmo_2024", "Malmö/Skåne (more sun, less district)"),
-        ("rural_sweden_2024", "Rural Sweden (more wood heating)"),
         ("future_2030", "2030 scenario (moderate electrification)"),
         ("future_2035", "2035 scenario (high electrification)"),
         ("future_2040", "2040 scenario (near-full electrification)"),
+        ("for_year(year)", "Auto-select closest preset for a given year"),
     ]
     for name, desc in presets:
         print(f"  - SweLoadSimConfig.{name}(): {desc}")

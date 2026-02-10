@@ -19,8 +19,8 @@ Usage:
     >>> exporter = SweLoadSimExporter()
     >>> exporter.export(area, "output.json")
     >>> 
-    >>> # Use regional preset
-    >>> config = SweLoadSimConfig.gothenburg_2024()
+    >>> # Use future scenario preset
+    >>> config = SweLoadSimConfig.future_2030()
     >>> exporter = SweLoadSimExporter(config=config)
     >>> 
     >>> # Custom configuration
@@ -304,7 +304,7 @@ class SweLoadSimConfig:
     
     Example:
         >>> # Use preset
-        >>> config = SweLoadSimConfig.gothenburg_2024()
+        >>> config = SweLoadSimConfig.swedish_2024()
         >>> 
         >>> # Custom config
         >>> config = SweLoadSimConfig(
@@ -347,82 +347,6 @@ class SweLoadSimConfig:
             ev=EVConfig(base_probability=0.30),
             solar=SolarConfig(villa_probability=0.15),
             battery=BatteryConfig(probability_given_solar=0.25),
-        )
-    
-    @classmethod
-    def gothenburg_2024(cls) -> "SweLoadSimConfig":
-        """Gothenburg-specific configuration (high district heating)."""
-        return cls(
-            heating=HeatingConfig(
-                apartment_district=0.95,
-                apartment_heat_pump=0.02,
-                apartment_electric=0.03,
-                villa_district=0.25,  # Higher than national
-                villa_heat_pump=0.45,
-                villa_electric=0.15,
-                villa_wood=0.10,
-                villa_gas=0.05,
-            ),
-            ev=EVConfig(base_probability=0.28),
-            solar=SolarConfig(villa_probability=0.12),  # Less sun than south
-            battery=BatteryConfig(probability_given_solar=0.20),
-        )
-    
-    @classmethod
-    def stockholm_2024(cls) -> "SweLoadSimConfig":
-        """Stockholm-specific configuration."""
-        return cls(
-            heating=HeatingConfig(
-                apartment_district=0.92,
-                apartment_heat_pump=0.04,
-                apartment_electric=0.04,
-                villa_district=0.15,
-                villa_heat_pump=0.50,
-                villa_electric=0.20,
-                villa_wood=0.10,
-                villa_gas=0.05,
-            ),
-            ev=EVConfig(base_probability=0.35),  # Higher EV adoption
-            solar=SolarConfig(villa_probability=0.14),
-            battery=BatteryConfig(probability_given_solar=0.22),
-        )
-    
-    @classmethod
-    def malmo_2024(cls) -> "SweLoadSimConfig":
-        """Malmö/Skåne configuration (more sun, less district heating)."""
-        return cls(
-            heating=HeatingConfig(
-                apartment_district=0.85,
-                apartment_heat_pump=0.08,
-                apartment_electric=0.07,
-                villa_district=0.08,
-                villa_heat_pump=0.60,
-                villa_electric=0.18,
-                villa_wood=0.08,
-                villa_gas=0.06,
-            ),
-            ev=EVConfig(base_probability=0.32),
-            solar=SolarConfig(villa_probability=0.20),  # More sun
-            battery=BatteryConfig(probability_given_solar=0.28),
-        )
-    
-    @classmethod
-    def rural_sweden_2024(cls) -> "SweLoadSimConfig":
-        """Rural Sweden configuration (more wood, less district)."""
-        return cls(
-            heating=HeatingConfig(
-                apartment_district=0.60,
-                apartment_heat_pump=0.20,
-                apartment_electric=0.20,
-                villa_district=0.02,
-                villa_heat_pump=0.45,
-                villa_electric=0.25,
-                villa_wood=0.25,  # Much higher
-                villa_gas=0.03,
-            ),
-            ev=EVConfig(base_probability=0.20),  # Lower, but often needed
-            solar=SolarConfig(villa_probability=0.18),
-            battery=BatteryConfig(probability_given_solar=0.30),
         )
     
     @classmethod
@@ -495,6 +419,40 @@ class SweLoadSimConfig:
                 size_kwh_mean=15.0,
             ),
         )
+
+    @classmethod
+    def for_year(cls, year: int) -> "SweLoadSimConfig":
+        """
+        Auto-select the best config preset for a given year.
+
+        Picks the closest matching preset so that prognosis-scaled
+        populations get technology adoption rates consistent with
+        their target year.
+
+        Available presets: swedish_2024, future_2030, future_2035,
+        future_2040.
+
+        Args:
+            year: Target year (e.g. 2024, 2030, 2032, 2040)
+
+        Returns:
+            The closest SweLoadSimConfig preset
+
+        Example:
+            >>> config = SweLoadSimConfig.for_year(2032)
+            >>> # Returns future_2030() (closest to 2032)
+        """
+        presets = [
+            (2024, cls.swedish_2024),
+            (2030, cls.future_2030),
+            (2035, cls.future_2035),
+            (2040, cls.future_2040),
+        ]
+
+        best_year, best_fn = min(
+            presets, key=lambda t: abs(t[0] - year)
+        )
+        return best_fn()
 
 
 # =============================================================================
@@ -607,8 +565,8 @@ class SweLoadSimExporter(BaseExporter):
         return output_path
     
     def _build_metadata(self, area: "GbgArea") -> Dict[str, Any]:
-        """Build metadata section."""
-        return {
+        """Build metadata section, including prognosis info if available."""
+        meta = {
             "source": "GbgSynth",
             "area_code": area.area_code,
             "area_name": area.area_name,
@@ -618,6 +576,21 @@ class SweLoadSimExporter(BaseExporter):
             "export_timestamp": datetime.now().isoformat(),
             "target_simulator": "SweLoadSim",
         }
+
+        # Include prognosis scaling context when present
+        prognosis = area.stats.get("prognosis") if area.stats else None
+        if prognosis:
+            meta["prognosis"] = {
+                "base_year": prognosis.get("base_year"),
+                "target_year": prognosis.get("target_year"),
+                "mel_code": prognosis.get("mel_code"),
+                "mel_name": prognosis.get("mel_name"),
+                "base_population": prognosis.get("base_population"),
+                "target_population": prognosis.get("target_population"),
+                "overall_growth": prognosis.get("overall_growth"),
+            }
+
+        return meta
     
     def _serialize_config(self) -> Dict[str, Any]:
         """Serialize configuration for reproducibility."""
@@ -784,10 +757,6 @@ class SweLoadSimExporter(BaseExporter):
             "version": "1.0",
             "config_presets": [
                 "swedish_2024",
-                "gothenburg_2024",
-                "stockholm_2024",
-                "malmo_2024",
-                "rural_sweden_2024",
                 "future_2030",
                 "future_2035",
                 "future_2040",
