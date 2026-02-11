@@ -62,8 +62,9 @@ def mock_area():
         })
     }
     
-    # Mock comparison methods
-    area._compare_age_distribution = Mock(return_value={
+    # Mock comparison methods via _comparator()
+    mock_comparator = Mock()
+    mock_comparator._compare_age_distribution = Mock(return_value={
         'name': 'Age Distribution',
         'comparison': [
             {'category': '0-5 år', 'actual': 10, 'synth': 12, 'diff': 2, 'error_pct': 20},
@@ -71,13 +72,14 @@ def mock_area():
         ]
     })
     
-    area._compare_household_size_distribution = Mock(return_value={
+    mock_comparator._compare_household_size_distribution = Mock(return_value={
         'name': 'Household Size',
         'comparison': [
             {'category': '1 person', 'actual': 50, 'synth': 52, 'diff': 2, 'error_pct': 4},
             {'category': '2 personer', 'actual': 100, 'synth': 98, 'diff': -2, 'error_pct': -2},
         ]
     })
+    area._comparator = Mock(return_value=mock_comparator)
     
     area.compare_to_marginals = Mock(return_value={
         'sex': {
@@ -167,7 +169,8 @@ class TestPlotAgeDistribution:
         import matplotlib.pyplot as plt
 
         # Provide comparison in ALPHABETICAL order (the real bug scenario)
-        mock_area._compare_age_distribution = Mock(return_value={
+        mock_comparator = Mock()
+        mock_comparator._compare_age_distribution = Mock(return_value={
             'name': 'Age Distribution',
             'comparison': [
                 # alphabetical: 0-5, 16-18, 19-24, 25-34, 35-44, 45-54, 55-64, 6-15, 65-74, 75-84, 85-
@@ -184,6 +187,7 @@ class TestPlotAgeDistribution:
                 {'category': '85- år',   'actual':  48, 'synth':  48, 'diff': 0, 'error_pct': 0},
             ]
         })
+        mock_area._comparator = Mock(return_value=mock_comparator)
 
         fig = plotting.plot_age_distribution(mock_area, show_marginals=True)
         ax = fig.axes[0]

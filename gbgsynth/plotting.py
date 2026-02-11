@@ -111,7 +111,7 @@ def plot_age_distribution(
     # Overlay marginals if available and requested
     census_counts = None
     if show_marginals and area._marginals.get('population') is not None:
-        comparison = area._compare_age_distribution()
+        comparison = area._comparator()._compare_age_distribution()
         if comparison and 'comparison' in comparison:
             import re
             
@@ -204,7 +204,7 @@ def plot_household_size(
     width = 0.35
     
     if show_marginals and area._marginals.get('household') is not None:
-        comparison = area._compare_household_size_distribution()
+        comparison = area._comparator()._compare_household_size_distribution()
         if comparison and 'comparison' in comparison:
             actual_values = []
             for label in labels:

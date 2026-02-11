@@ -6,6 +6,7 @@ import pytest
 from unittest.mock import Mock, patch, MagicMock
 import pandas as pd
 from gbgsynth.area import GbgArea
+from gbgsynth.area.marginal_comparator import MarginalComparator
 from gbgsynth.models import Agent, Household
 
 
@@ -204,16 +205,12 @@ class TestGbgAreaCodeHandling:
 
 
 class TestCompareMedianIncome:
-    """Tests for _compare_median_income method."""
+    """Tests for MarginalComparator._compare_median_income."""
 
-    def _make_area_with_median(self, census_rows, individuals):
-        """Helper: build a GbgArea with pre-set marginals and individuals."""
-        area = GbgArea(area_code="107", area_name="Haga", year=2023)
-        area._is_generated = True
-        area.individuals = individuals
-        area.households = []
-        edu_df = pd.DataFrame(census_rows)
-        area._marginals = {
+    def _make_comparator(self, census_rows, individuals):
+        """Helper: build a MarginalComparator with the given data."""
+        edu_df = pd.DataFrame(census_rows) if census_rows is not None else None
+        marginals = {
             'population': pd.DataFrame(),
             'household': pd.DataFrame(),
             'household_position': None,
@@ -221,23 +218,18 @@ class TestCompareMedianIncome:
             'education_level': edu_df,
             'income_source': None,
         }
-        return area
+        return MarginalComparator(
+            individuals=individuals,
+            households=[],
+            marginals=marginals,
+            area_name="Haga",
+            year=2023,
+        )
 
     def test_returns_empty_dict_when_no_education_data(self):
         """Median income comparison is empty when no education data."""
-        area = GbgArea(area_code="107", area_name="Haga", year=2023)
-        area._is_generated = True
-        area.individuals = []
-        area.households = []
-        area._marginals = {
-            'population': pd.DataFrame(),
-            'household': pd.DataFrame(),
-            'household_position': None,
-            'income': None,
-            'education_level': None,
-            'income_source': None,
-        }
-        result = area._compare_median_income()
+        comp = self._make_comparator(None, [])
+        result = comp._compare_median_income()
         assert result == {}
 
     def test_basic_median_comparison(self):
@@ -251,8 +243,8 @@ class TestCompareMedianIncome:
             Agent(agent_id=2, age=30, sex='male', education='secondary', income=290_000),
             Agent(agent_id=3, age=32, sex='male', education='secondary', income=305_000),
         ]
-        area = self._make_area_with_median(census_rows, agents)
-        result = area._compare_median_income()
+        comp = self._make_comparator(census_rows, agents)
+        result = comp._compare_median_income()
 
         assert result != {}
         assert result['name'] == 'Median Income (SEK, informational)'
@@ -275,8 +267,8 @@ class TestCompareMedianIncome:
             Agent(agent_id=1, age=28, sex='male', education='secondary', income=310_000),
             Agent(agent_id=2, age=30, sex='female', education='post_secondary', income=360_000),
         ]
-        area = self._make_area_with_median(census_rows, agents)
-        result = area._compare_median_income()
+        comp = self._make_comparator(census_rows, agents)
+        result = comp._compare_median_income()
         assert len(result['comparison']) == 2
 
     def test_children_excluded(self):
@@ -289,8 +281,8 @@ class TestCompareMedianIncome:
             Agent(agent_id=1, age=10, sex='male', education='secondary', income=0),
             Agent(agent_id=2, age=28, sex='male', education='secondary', income=310_000),
         ]
-        area = self._make_area_with_median(census_rows, agents)
-        result = area._compare_median_income()
+        comp = self._make_comparator(census_rows, agents)
+        result = comp._compare_median_income()
         row = result['comparison'][0]
         # Only the adult (310k) should be in the synth median
         assert row['synth'] == 310_000
@@ -306,22 +298,18 @@ class TestCompareMedianIncome:
         agents = [
             Agent(agent_id=1, age=28, sex='male', education='secondary', income=310_000),
         ]
-        area = self._make_area_with_median(census_rows, agents)
-        result = area._compare_median_income()
+        comp = self._make_comparator(census_rows, agents)
+        result = comp._compare_median_income()
         assert len(result['comparison']) == 1
         assert result['comparison'][0]['actual'] == 300_000
 
 
 class TestCompareHhTypeChildren:
-    """Tests for _compare_hh_type_children joint validation."""
+    """Tests for MarginalComparator._compare_hh_type_children."""
 
-    def _make_area(self, census_rows, households, individuals):
-        """Helper to create a GbgArea with hh_type_children marginal."""
-        area = GbgArea(area_code="107", area_name="107 Haga", year=2023)
-        area._is_generated = True
-        area.households = households
-        area.individuals = individuals
-        area._marginals = {
+    def _make_comparator(self, census_rows, households, individuals):
+        """Helper to create a MarginalComparator with hh_type_children marginal."""
+        marginals = {
             'population': pd.DataFrame(),
             'household': pd.DataFrame(),
             'household_position': None,
@@ -330,12 +318,18 @@ class TestCompareHhTypeChildren:
             'income_source': None,
             'hh_type_children': pd.DataFrame(census_rows) if census_rows else None,
         }
-        return area
+        return MarginalComparator(
+            individuals=individuals,
+            households=households,
+            marginals=marginals,
+            area_name="107 Haga",
+            year=2023,
+        )
 
     def test_empty_data_returns_empty(self):
         """No HH type × children data returns empty dict."""
-        area = self._make_area(None, [], [])
-        result = area._compare_hh_type_children()
+        comp = self._make_comparator(None, [], [])
+        result = comp._compare_hh_type_children()
         assert result == {}
 
     def test_basic_comparison(self):
@@ -366,8 +360,8 @@ class TestCompareHhTypeChildren:
             Household(household_id=2, size=1, members=[adults[1]]),
             Household(household_id=3, size=4, members=adults[2:]),
         ]
-        area = self._make_area(census_rows, households, adults)
-        result = area._compare_hh_type_children()
+        comp = self._make_comparator(census_rows, households, adults)
+        result = comp._compare_hh_type_children()
 
         assert result['name'] == 'HH Type × Children 0-17 (informational)'
         assert len(result['comparison']) > 0
@@ -392,8 +386,8 @@ class TestCompareHhTypeChildren:
         for m in members:
             m.household_id = 1
         hh = Household(household_id=1, size=7, members=members)
-        area = self._make_area(census_rows, [hh], members)
-        result = area._compare_hh_type_children()
+        comp = self._make_comparator(census_rows, [hh], members)
+        result = comp._compare_hh_type_children()
         for row in result['comparison']:
             if row['category'] == 'Sammanboende | 4 barn eller fler':
                 assert row['synth'] == 1
@@ -403,15 +397,11 @@ class TestCompareHhTypeChildren:
 
 
 class TestCompareJointRoleAgeSex:
-    """Tests for _compare_joint_role_age_sex validation."""
+    """Tests for MarginalComparator._compare_joint_role_age_sex."""
 
-    def _make_area(self, census_rows, individuals, households):
-        """Helper to create a GbgArea with household_position marginal."""
-        area = GbgArea(area_code="107", area_name="107 Haga", year=2023)
-        area._is_generated = True
-        area.individuals = individuals
-        area.households = households
-        area._marginals = {
+    def _make_comparator(self, census_rows, individuals, households):
+        """Helper to create a MarginalComparator with household_position marginal."""
+        marginals = {
             'population': pd.DataFrame(),
             'household': pd.DataFrame(),
             'household_position': pd.DataFrame(census_rows) if census_rows else None,
@@ -420,12 +410,18 @@ class TestCompareJointRoleAgeSex:
             'income_source': None,
             'hh_type_children': None,
         }
-        return area
+        return MarginalComparator(
+            individuals=individuals,
+            households=households,
+            marginals=marginals,
+            area_name="107 Haga",
+            year=2023,
+        )
 
     def test_empty_data_returns_empty(self):
         """No household position data returns empty dict."""
-        area = self._make_area(None, [], [])
-        result = area._compare_joint_role_age_sex()
+        comp = self._make_comparator(None, [], [])
+        result = comp._compare_joint_role_age_sex()
         assert result == {}
 
     def test_basic_seven_categories(self):
@@ -446,8 +442,8 @@ class TestCompareJointRoleAgeSex:
         hh1 = Household(household_id=1, size=2, members=[ind1])
         hh2 = Household(household_id=2, size=1, members=[ind2])
 
-        area = self._make_area(census_rows, [ind1, ind2], [hh1, hh2])
-        result = area._compare_joint_role_age_sex()
+        comp = self._make_comparator(census_rows, [ind1, ind2], [hh1, hh2])
+        result = comp._compare_joint_role_age_sex()
 
         assert 'Detailed HH Position' in result['name']
         categories = [r['category'] for r in result['comparison']]
@@ -467,8 +463,8 @@ class TestCompareJointRoleAgeSex:
         child.household_id = 1
         hh = Household(household_id=1, size=2, members=[parent, child])
 
-        area = self._make_area(census_rows, [parent, child], [hh])
-        result = area._compare_joint_role_age_sex()
+        comp = self._make_comparator(census_rows, [parent, child], [hh])
+        result = comp._compare_joint_role_age_sex()
 
         for row in result['comparison']:
             if row['category'] == 'Ensam förälder':

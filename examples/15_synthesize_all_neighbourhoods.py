@@ -250,21 +250,10 @@ def generate_error_report(
                 lines.append(f"    {dim_key:<20} {dm['sae']:>8.4f} {dm['chi2_p']:>8.4f} {dm['z2_p']:>8.4f}")
         lines.append("")
         
-        # Overall quality rating (based on median SAE — Voas & Williamson benchmark)
+        # Interpretation note (SAE is from Voas & Williamson, 2001;
+        # there is no universally agreed grading — lower SAE is better)
         sae = ov.get('sae_median', 1.0)
-        
-        if sae <= 0.005:
-            overall_quality = "⭐⭐⭐⭐⭐ EXCELLENT (SAE ≤ 0.005, GenSynthPop benchmark)"
-        elif sae <= 0.01:
-            overall_quality = "⭐⭐⭐⭐ VERY GOOD (SAE ≤ 0.01)"
-        elif sae <= 0.02:
-            overall_quality = "⭐⭐⭐ GOOD (SAE ≤ 0.02)"
-        elif sae <= 0.05:
-            overall_quality = "⭐⭐ FAIR (SAE ≤ 0.05)"
-        else:
-            overall_quality = "⭐ NEEDS IMPROVEMENT (SAE > 0.05)"
-        
-        lines.append(f"  Overall Quality Rating:         {overall_quality}")
+        lines.append(f"  Median SAE:  {sae:.4f}  (lower → better fit; 0 = perfect)")
     
     # IPF Statistics (if available)
     if hasattr(area, 'ipf_stats') and area.ipf_stats:
@@ -378,19 +367,6 @@ def create_summary_dataframe(all_results: List[Dict]) -> pd.DataFrame:
             row['chi2_p_min'] = ov.get('chi2_p_min')
             row['z2_p_min'] = ov.get('z2_p_min')
             
-            # Quality grade based on median SAE (Voas & Williamson benchmark)
-            sae = ov.get('sae_median', 1.0)
-            if sae <= 0.005:
-                row['quality_grade'] = 'A'   # Excellent (GenSynthPop range)
-            elif sae <= 0.01:
-                row['quality_grade'] = 'B'
-            elif sae <= 0.02:
-                row['quality_grade'] = 'C'
-            elif sae <= 0.05:
-                row['quality_grade'] = 'D'
-            else:
-                row['quality_grade'] = 'F'
-        
         # Per-dimension error summaries
         if result.get('comparisons'):
             for dim_key, data in result['comparisons'].items():
@@ -718,13 +694,6 @@ def main():
         avg_sae = np.mean(saes) if saes else 0
         median_sae = np.median(saes) if saes else 0
         
-        # Quality grade breakdown by SAE (Voas & Williamson benchmark)
-        grade_a = sum(1 for s in saes if s <= 0.005)    # GenSynthPop range
-        grade_b = sum(1 for s in saes if 0.005 < s <= 0.01)
-        grade_c = sum(1 for s in saes if 0.01 < s <= 0.02)
-        grade_d = sum(1 for s in saes if 0.02 < s <= 0.05)
-        grade_f = sum(1 for s in saes if s > 0.05)
-        
         logger.info(f"  Total Population:        {total_pop:,}")
         logger.info(f"  Total Households:        {total_hh:,}")
         logger.info(f"  Average RMSE:            {avg_rmse:.2f}")
@@ -733,12 +702,13 @@ def main():
         logger.info(f"  Average SAE:             {avg_sae:.4f}")
         logger.info(f"  Median SAE:              {median_sae:.4f}")
         logger.info("")
-        logger.info("  Quality Grades (by SAE — Voas & Williamson, GenSynthPop benchmark):")
-        logger.info(f"    A (≤0.005):  {grade_a:3d} areas  (excellent — GenSynthPop range)")
-        logger.info(f"    B (≤0.01):   {grade_b:3d} areas")
-        logger.info(f"    C (≤0.02):   {grade_c:3d} areas")
-        logger.info(f"    D (≤0.05):   {grade_d:3d} areas")
-        logger.info(f"    F (>0.05):   {grade_f:3d} areas")
+        logger.info("  SAE distribution (Voas & Williamson, 2001 — lower is better):")
+        for label, lo, hi in [("SAE ≤ 0.005", 0, 0.0051), ("SAE 0.005–0.01", 0.0051, 0.0101),
+                               ("SAE 0.01–0.02", 0.0101, 0.0201), ("SAE 0.02–0.05", 0.0201, 0.0501),
+                               ("SAE > 0.05", 0.0501, 999)]:
+            n = sum(1 for s in saes if lo <= s < hi)
+            pct = 100 * n / len(saes) if saes else 0
+            logger.info(f"    {label:20s}: {n:3d} areas ({pct:.0f}%)")
     
     logger.info("")
     logger.info(f"Output files saved to: {output_dir}")
