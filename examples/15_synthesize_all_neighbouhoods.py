@@ -233,22 +233,36 @@ def generate_error_report(
         lines.append(f"  Mean Absolute Error (MAE):      {ov['mae']:>15.2f}")
         lines.append(f"  Maximum Category Error:         {ov['max_error']:>15,}")
         lines.append(f"  Pearson Correlation:            {ov['correlation']:>15.4f}")
+        lines.append(f"  MAPE (unweighted):              {ov.get('mape', 0):>14.1f}%")
+        lines.append(f"  Weighted MAPE:                  {ov.get('wmape', 0):>14.1f}%")
+        lines.append("")
+        lines.append("  Voas & Williamson (2001) Goodness-of-Fit (per-dimension):")
+        lines.append(f"    SAE median:                   {ov.get('sae_median', 0):>13.4f}  ← lower is better")
+        lines.append(f"    SAE mean:                     {ov.get('sae_mean', 0):>13.4f}")
+        lines.append(f"    SAE max (worst dimension):    {ov.get('sae_max', 0):>13.4f}")
+        lines.append(f"    X² p-value (worst dim):       {ov.get('chi2_p_min', 0):>13.4f}  ← higher is better")
+        lines.append(f"    Z² p-value (worst dim):       {ov.get('z2_p_min', 0):>13.4f}")
+        if ov.get('dim_metrics'):
+            lines.append("")
+            lines.append(f"    {'Dimension':<20} {'SAE':>8} {'X² p':>8} {'Z² p':>8}")
+            lines.append("    " + "-" * 44)
+            for dim_key, dm in ov['dim_metrics'].items():
+                lines.append(f"    {dim_key:<20} {dm['sae']:>8.4f} {dm['chi2_p']:>8.4f} {dm['z2_p']:>8.4f}")
         lines.append("")
         
-        # Overall quality rating
-        rmse = ov['rmse']
-        correlation = ov['correlation']
+        # Overall quality rating (based on median SAE — Voas & Williamson benchmark)
+        sae = ov.get('sae_median', 1.0)
         
-        if correlation > 0.99 and rmse < 50:
-            overall_quality = "⭐⭐⭐⭐⭐ EXCELLENT"
-        elif correlation > 0.98 and rmse < 100:
-            overall_quality = "⭐⭐⭐⭐ VERY GOOD"
-        elif correlation > 0.95 and rmse < 200:
-            overall_quality = "⭐⭐⭐ GOOD"
-        elif correlation > 0.90:
-            overall_quality = "⭐⭐ FAIR"
+        if sae <= 0.005:
+            overall_quality = "⭐⭐⭐⭐⭐ EXCELLENT (SAE ≤ 0.005, GenSynthPop benchmark)"
+        elif sae <= 0.01:
+            overall_quality = "⭐⭐⭐⭐ VERY GOOD (SAE ≤ 0.01)"
+        elif sae <= 0.02:
+            overall_quality = "⭐⭐⭐ GOOD (SAE ≤ 0.02)"
+        elif sae <= 0.05:
+            overall_quality = "⭐⭐ FAIR (SAE ≤ 0.05)"
         else:
-            overall_quality = "⭐ NEEDS IMPROVEMENT"
+            overall_quality = "⭐ NEEDS IMPROVEMENT (SAE > 0.05)"
         
         lines.append(f"  Overall Quality Rating:         {overall_quality}")
     
@@ -354,16 +368,25 @@ def create_summary_dataframe(all_results: List[Dict]) -> pd.DataFrame:
             row['max_error'] = ov.get('max_error')
             row['census_population'] = ov.get('total_actual')
             row['synth_population'] = ov.get('total_synth')
+            row['mape'] = ov.get('mape')
+            row['wmape'] = ov.get('wmape')
             
-            # Add quality grade based on correlation
-            corr = ov.get('correlation', 0)
-            if corr >= 0.99:
-                row['quality_grade'] = 'A'
-            elif corr >= 0.98:
+            # Voas & Williamson (2001) metrics (per-dimension, aggregated)
+            row['sae_median'] = ov.get('sae_median')
+            row['sae_mean'] = ov.get('sae_mean')
+            row['sae_max'] = ov.get('sae_max')
+            row['chi2_p_min'] = ov.get('chi2_p_min')
+            row['z2_p_min'] = ov.get('z2_p_min')
+            
+            # Quality grade based on median SAE (Voas & Williamson benchmark)
+            sae = ov.get('sae_median', 1.0)
+            if sae <= 0.005:
+                row['quality_grade'] = 'A'   # Excellent (GenSynthPop range)
+            elif sae <= 0.01:
                 row['quality_grade'] = 'B'
-            elif corr >= 0.97:
+            elif sae <= 0.02:
                 row['quality_grade'] = 'C'
-            elif corr >= 0.95:
+            elif sae <= 0.05:
                 row['quality_grade'] = 'D'
             else:
                 row['quality_grade'] = 'F'
@@ -577,22 +600,22 @@ def main():
             result['status'] = 'success'
             successful += 1
             
-            # Log summary with new MAPE metric
+            # Log summary with Voas & Williamson metrics
             ov = comparisons.get('overall', {})
-            rmse = ov.get('rmse', 'N/A')
-            mape = ov.get('mape', 'N/A')  # Mean Absolute Percentage Error - more honest than correlation
-            corr = ov.get('correlation', 'N/A')
-            if isinstance(rmse, float):
-                rmse = f"{rmse:.1f}"
+            mape = ov.get('mape', 'N/A')
+            sae = ov.get('sae_median', 'N/A')
+            chi2_p = ov.get('chi2_p_min', 'N/A')
             if isinstance(mape, float):
                 mape = f"{mape:.1f}%"
-            if isinstance(corr, float):
-                corr = f"{corr:.4f}"
+            if isinstance(sae, float):
+                sae = f"{sae:.4f}"
+            if isinstance(chi2_p, float):
+                chi2_p = f"{chi2_p:.4f}"
             
             logger.info(
                 f"  ✅ {stats['total_population']:,} individuals, "
                 f"{stats['total_households']:,} households | "
-                f"MAPE: {mape}, Corr: {corr} | "
+                f"SAE: {sae}, MAPE: {mape}, X²p: {chi2_p} | "
                 f"{execution_time:.1f}s"
             )
             
@@ -643,7 +666,16 @@ def main():
         if r['stats']:
             json_result['stats'] = r['stats']
         if r['comparisons'] and 'overall' in r['comparisons']:
-            json_result['overall_fit'] = r['comparisons']['overall']
+            ov = r['comparisons']['overall']
+            # Exclude dim_metrics (nested, verbose) from JSON for cleanliness
+            json_result['overall_fit'] = {
+                k: v for k, v in ov.items() if k != 'dim_metrics'
+            }
+            # Top-level shortcuts
+            json_result['sae_median'] = ov.get('sae_median')
+            json_result['mape'] = ov.get('mape')
+            json_result['chi2_p_min'] = ov.get('chi2_p_min')
+            json_result['z2_p_min'] = ov.get('z2_p_min')
         json_results.append(json_result)
     
     json_file = os.path.join(output_dir, 'results.json')
@@ -671,36 +703,42 @@ def main():
         correlations = []
         mapes = []
         rmses = []
+        saes = []
         for r in success_results:
             if r['comparisons'] and 'overall' in r['comparisons']:
                 ov = r['comparisons']['overall']
                 correlations.append(ov.get('correlation', 0))
                 mapes.append(ov.get('mape', 0))
                 rmses.append(ov.get('rmse', 0))
+                saes.append(ov.get('sae_median', 0))
         
         avg_rmse = np.mean(rmses) if rmses else 0
         avg_corr = np.mean(correlations) if correlations else 0
         avg_mape = np.mean(mapes) if mapes else 0
+        avg_sae = np.mean(saes) if saes else 0
+        median_sae = np.median(saes) if saes else 0
         
-        # Quality grade breakdown by MAPE (more honest grading)
-        grade_a = sum(1 for m in mapes if m <= 5)      # ≤5% MAPE
-        grade_b = sum(1 for m in mapes if 5 < m <= 10)  # 5-10% MAPE
-        grade_c = sum(1 for m in mapes if 10 < m <= 15) # 10-15% MAPE
-        grade_d = sum(1 for m in mapes if 15 < m <= 25) # 15-25% MAPE
-        grade_f = sum(1 for m in mapes if m > 25)       # >25% MAPE
+        # Quality grade breakdown by SAE (Voas & Williamson benchmark)
+        grade_a = sum(1 for s in saes if s <= 0.005)    # GenSynthPop range
+        grade_b = sum(1 for s in saes if 0.005 < s <= 0.01)
+        grade_c = sum(1 for s in saes if 0.01 < s <= 0.02)
+        grade_d = sum(1 for s in saes if 0.02 < s <= 0.05)
+        grade_f = sum(1 for s in saes if s > 0.05)
         
         logger.info(f"  Total Population:        {total_pop:,}")
         logger.info(f"  Total Households:        {total_hh:,}")
         logger.info(f"  Average RMSE:            {avg_rmse:.2f}")
         logger.info(f"  Average MAPE:            {avg_mape:.1f}%")
         logger.info(f"  Average Correlation:     {avg_corr:.4f}")
+        logger.info(f"  Average SAE:             {avg_sae:.4f}")
+        logger.info(f"  Median SAE:              {median_sae:.4f}")
         logger.info("")
-        logger.info("  Quality Grades (by MAPE - treats all categories equally):")
-        logger.info(f"    A (≤5%):   {grade_a:3d} areas")
-        logger.info(f"    B (≤10%):  {grade_b:3d} areas")
-        logger.info(f"    C (≤15%):  {grade_c:3d} areas")
-        logger.info(f"    D (≤25%):  {grade_d:3d} areas")
-        logger.info(f"    F (>25%):  {grade_f:3d} areas")
+        logger.info("  Quality Grades (by SAE — Voas & Williamson, GenSynthPop benchmark):")
+        logger.info(f"    A (≤0.005):  {grade_a:3d} areas  (excellent — GenSynthPop range)")
+        logger.info(f"    B (≤0.01):   {grade_b:3d} areas")
+        logger.info(f"    C (≤0.02):   {grade_c:3d} areas")
+        logger.info(f"    D (≤0.05):   {grade_d:3d} areas")
+        logger.info(f"    F (>0.05):   {grade_f:3d} areas")
     
     logger.info("")
     logger.info(f"Output files saved to: {output_dir}")

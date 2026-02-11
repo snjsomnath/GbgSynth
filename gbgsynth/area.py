@@ -1326,37 +1326,91 @@ class GbgArea:
         all_actual = []
         all_synth = []
         all_pct_errors = []  # Percentage errors for each category
+        
+        # ── Voas & Williamson (2001) per-dimension metrics ───────────
+        # Reference: de Mooij et al. (2024) GenSynthPop, §4.3
+        # Computed per contingency table (dimension), then summarised.
+        from scipy import stats as sp_stats
+        
+        dim_metrics = {}  # dimension_key → {sae, tae, chi2, z2, ...}
+        
         for cat, data in comparisons.items():
             if cat in excluded_from_mape:
                 continue
             if data and 'comparison' in data:
+                dim_actual = []
+                dim_synth = []
                 for row in data['comparison']:
-                    # Skip individual categories flagged as structurally
-                    # unmatchable (e.g. "Övriga hushåll")
                     if row.get('exclude_from_mape'):
                         continue
+                    dim_actual.append(row['actual'])
+                    dim_synth.append(row['synth'])
                     all_actual.append(row['actual'])
                     all_synth.append(row['synth'])
-                    # Track percentage error per category (avoid division by zero)
                     if row['actual'] > 0:
                         pct_err = abs(row['synth'] - row['actual']) / row['actual'] * 100
                         all_pct_errors.append(pct_err)
+                
+                if dim_actual:
+                    ea = np.array(dim_actual, dtype=float)
+                    oa = np.array(dim_synth, dtype=float)
+                    da = oa - ea
+                    
+                    # TAE & SAE
+                    tae_d = float(np.sum(np.abs(da)))
+                    n_d = float(np.sum(ea))
+                    sae_d = tae_d / n_d if n_d > 0 else 0.0
+                    
+                    # Pearson X² (Eq. 3) — 0-expected replaced with 1
+                    e_safe = np.where(ea == 0, 1.0, ea)
+                    chi2_d = float(np.sum(da ** 2 / e_safe))
+                    
+                    # Binomial Z² (Eq. 4)
+                    sum_e = n_d if n_d > 0 else 1.0
+                    sum_o = float(np.sum(oa)) if np.sum(oa) > 0 else 1.0
+                    t = oa / sum_o
+                    p = np.where(ea != 0, ea / sum_e, 1.0 / sum_e)
+                    correction = 1.0 / (2.0 * sum_e)
+                    corrected = np.maximum(np.abs(t - p) - correction, 0.0)
+                    denom = np.sqrt(p * (1.0 - p) / sum_e)
+                    denom_safe = np.where(denom == 0, 1.0, denom)
+                    z2_d = float(np.sum((corrected / denom_safe) ** 2))
+                    
+                    dof_d = len(dim_actual)
+                    chi2_p_d = float(1.0 - sp_stats.chi2.cdf(chi2_d, dof_d)) if dof_d > 0 else 1.0
+                    z2_p_d = float(1.0 - sp_stats.chi2.cdf(z2_d, dof_d)) if dof_d > 0 else 1.0
+                    
+                    dim_metrics[cat] = {
+                        'tae': tae_d,
+                        'sae': sae_d,
+                        'chi2': chi2_d,
+                        'chi2_p': chi2_p_d,
+                        'z2': z2_d,
+                        'z2_p': z2_p_d,
+                        'dof': dof_d,
+                    }
+                    # Attach to the comparison dict so it's available per-dimension
+                    data['fit'] = dim_metrics[cat]
         
         if all_actual:
-            actual_arr = np.array(all_actual)
-            synth_arr = np.array(all_synth)
+            actual_arr = np.array(all_actual, dtype=float)
+            synth_arr = np.array(all_synth, dtype=float)
             diff_arr = synth_arr - actual_arr
             
-            # Calculate Mean Absolute Percentage Error (MAPE) - more intuitive than correlation
-            # This treats all categories equally regardless of size
+            # MAPE — treats all categories equally regardless of size
             mape = float(np.mean(all_pct_errors)) if all_pct_errors else 0.0
             
-            # Also calculate weighted MAPE (weighted by census count)
+            # Weighted MAPE (weighted by census count)
             weighted_pct_errors = []
             for actual, synth in zip(all_actual, all_synth):
                 if actual > 0:
                     weighted_pct_errors.append(abs(synth - actual) / actual * 100 * actual)
             wmape = sum(weighted_pct_errors) / sum(all_actual) if sum(all_actual) > 0 else 0.0
+            
+            # Aggregate V&W metrics: median SAE across dimensions
+            sae_values = [m['sae'] for m in dim_metrics.values()]
+            chi2_p_values = [m['chi2_p'] for m in dim_metrics.values()]
+            z2_p_values = [m['z2_p'] for m in dim_metrics.values()]
             
             comparisons['overall'] = {
                 'total_actual': int(sum(all_actual)),
@@ -1365,10 +1419,17 @@ class GbgArea:
                 'mae': float(np.mean(np.abs(diff_arr))),
                 'max_error': int(np.max(np.abs(diff_arr))),
                 'correlation': float(np.corrcoef(actual_arr, synth_arr)[0, 1]) if len(actual_arr) > 1 else 1.0,
-                'mape': mape,  # Mean Absolute Percentage Error (unweighted - all categories equal)
-                'wmape': wmape,  # Weighted MAPE (large categories count more)
+                'mape': mape,
+                'wmape': wmape,
                 'n_categories': len(all_actual),
-                'max_pct_error': max(all_pct_errors) if all_pct_errors else 0.0
+                'max_pct_error': max(all_pct_errors) if all_pct_errors else 0.0,
+                # Voas & Williamson (2001) — per-dimension then aggregated
+                'sae_median': float(np.median(sae_values)) if sae_values else 0.0,
+                'sae_max': float(np.max(sae_values)) if sae_values else 0.0,
+                'sae_mean': float(np.mean(sae_values)) if sae_values else 0.0,
+                'chi2_p_min': float(np.min(chi2_p_values)) if chi2_p_values else 1.0,
+                'z2_p_min': float(np.min(z2_p_values)) if z2_p_values else 1.0,
+                'dim_metrics': dim_metrics,  # Full per-dimension detail
             }
         
         if print_report:
@@ -1619,97 +1680,110 @@ class GbgArea:
         return {'name': 'Housing Type Distribution', 'comparison': comparison}
     
     def _compare_role_distribution(self) -> dict:
-        """Compare household role (Hushållstyp) distribution."""
-        pop_data = self._marginals.get('population')
-        if pop_data is None or pop_data.empty:
+        """Compare individual-level household position distribution.
+
+        Uses the 60_FolkmHHStallning position data as ground truth and
+        classifies each synthesised individual into 5 census-aligned
+        categories:
+
+            Sammanboende  (census Gift/reg.partner + Sambo merged)
+            Ensam förälder
+            Barn
+            Ensamboende
+            Övriga
+
+        Gift and Sambo are merged because the synthesiser has no concept
+        of marital status — it only assigns ``cohabiting``.  The 7-category
+        breakdown (with Gift/Sambo split) is available in the informational
+        ``joint_role_age_sex`` comparison.
+        """
+        pos_data = self._marginals.get('household_position')
+        if pos_data is None or (hasattr(pos_data, 'empty') and pos_data.empty):
             return {}
-        
-        role_col = 'Hushållstyp' if 'Hushållstyp' in pop_data.columns else 'hh_role'
-        count_col = 'Antal' if 'Antal' in pop_data.columns else pop_data.columns[-1]
-        
-        if role_col not in pop_data.columns:
+
+        # ── Identify columns ─────────────────────────────────────────
+        pos_col = None
+        for col in pos_data.columns:
+            if 'ställning' in col.lower() or 'position' in col.lower():
+                pos_col = col
+                break
+        if pos_col is None:
             return {}
-        
-        actual = pop_data.groupby(role_col)[count_col].sum().to_dict()
-        
-        # The census "Hushållstyp" describes the HOUSEHOLD TYPE the person lives in:
-        # - Ensamstående: person living alone or single parent
-        # - Sammanboende: person in couple household (includes adults AND children in those households)
-        # - Övriga hushåll: other types (group housing, multigenerational, etc.)
-        # 
-        # This is different from individual role (single/cohabiting/child).
-        # We need to map based on household composition, not individual role.
-        
-        synth = {}
-        
-        # Build household_id -> Household lookup for O(1) access
+
+        count_col = 'Antal' if 'Antal' in pos_data.columns else pos_data.columns[-1]
+
+        # ── Map census position → 5 collapsed categories ─────────────
+        def collapsed_pos(pos_str: str) -> str:
+            ps = str(pos_str).lower()
+            if 'gift' in ps or 'partner' in ps or 'sambo' in ps:
+                return 'Sammanboende'
+            elif 'ensamstående förälder' in ps:
+                return 'Ensam förälder'
+            elif ps.startswith('barn'):
+                return 'Barn'
+            elif 'ensamboende' in ps:
+                return 'Ensamboende'
+            elif 'övriga' in ps or 'ej ensam' in ps:
+                return 'Övriga'
+            elif 'uppgift' in ps:
+                return 'Uppgift saknas'
+            return str(pos_str)[:16]
+
+        # ── Census actual counts (aggregate over age × sex) ──────────
+        actual: dict[str, int] = {}
+        for _, row in pos_data.iterrows():
+            pos = collapsed_pos(row[pos_col])
+            val = int(row[count_col]) if pd.notna(row[count_col]) else 0
+            actual[pos] = actual.get(pos, 0) + val
+
+        if not actual:
+            return {}
+
+        # ── Synthesised counts ───────────────────────────────────────
         hh_by_id = {h.household_id: h for h in self.households}
-        
+        synth: dict[str, int] = {}
+
         for ind in self.individuals:
-            # Find the household this person belongs to
-            hh = hh_by_id.get(ind.household_id)
-            
-            if hh is None:
-                # Shouldn't happen, but handle gracefully
-                synth['Uppgift saknas'] = synth.get('Uppgift saknas', 0) + 1
-                continue
-            
-            # Determine household type based on composition
-            # Note: 'single_parent' is a distinct role for census matching
-            has_couple = sum(1 for m in hh.members if m.hh_role == 'cohabiting') >= 2
-            is_single_person = len(hh.members) == 1
-            # Check for single parent: either has role 'single_parent', or is the only adult with children
-            has_single_parent = any(m.hh_role == 'single_parent' for m in hh.members)
-            is_single_parent_hh = has_single_parent or (
-                len([m for m in hh.members if m.hh_role in ('single', 'single_parent', 'cohabiting')]) == 1 and
-                any(m.hh_role == 'child' for m in hh.members)
-            )
-            
-            # Assign to census category
-            hh_type = None
-            for actual_cat in actual.keys():
-                actual_lower = str(actual_cat).lower()
-                
-                if has_couple and 'samman' in actual_lower:
-                    # Couple households (all members count as "Sammanboende")
-                    hh_type = actual_cat
-                    break
-                elif (is_single_person or is_single_parent_hh) and 'ensam' in actual_lower:
-                    # Single-person or single-parent households
-                    hh_type = actual_cat
-                    break
-                elif 'övriga' in actual_lower:
-                    # Default to "Övriga hushåll" for other structures
-                    hh_type = actual_cat
-                    # Don't break - prefer more specific matches
-            
-            if hh_type:
-                synth[hh_type] = synth.get(hh_type, 0) + 1
+            role = ind.hh_role
+            if role == 'child':
+                pos = 'Barn'
+            elif role == 'cohabiting':
+                pos = 'Sammanboende'
+            elif role == 'single_parent':
+                pos = 'Ensam förälder'
+            elif role == 'single':
+                hh = hh_by_id.get(ind.household_id)
+                if hh and len(hh.members) == 1:
+                    pos = 'Ensamboende'
+                elif hh and any(m.hh_role == 'child' for m in hh.members):
+                    pos = 'Ensam förälder'
+                else:
+                    pos = 'Ensamboende'
+            elif role == 'other':
+                pos = 'Övriga'
             else:
-                synth['Uppgift saknas'] = synth.get('Uppgift saknas', 0) + 1
-        
+                pos = 'Uppgift saknas'
+            synth[pos] = synth.get(pos, 0) + 1
+
+        # ── Build comparison rows ────────────────────────────────────
         comparison = []
-        for category in set(list(actual.keys()) + list(synth.keys())):
-            act_val = actual.get(category, 0)
-            syn_val = synth.get(category, 0)
+        all_positions = sorted(set(list(actual.keys()) + list(synth.keys())))
+        for pos in all_positions:
+            if pos == 'Uppgift saknas':
+                continue
+            act_val = actual.get(pos, 0)
+            syn_val = synth.get(pos, 0)
             diff = syn_val - act_val
             error_pct = (diff / act_val * 100) if act_val > 0 else 0
-            row = {
-                'category': category,
+            comparison.append({
+                'category': pos,
                 'actual': int(act_val),
                 'synth': int(syn_val),
                 'diff': int(diff),
-                'error_pct': round(error_pct, 1)
-            }
-            # "Övriga hushåll" is structurally unmatchable: the synthesizer
-            # only creates single/couple/child archetypes and cannot generate
-            # the multi-generational, roommate, or group-housing structures
-            # that census classifies as "Övriga".  Exclude from MAPE grading.
-            if 'övriga' in str(category).lower():
-                row['exclude_from_mape'] = True
-            comparison.append(row)
-        
-        return {'name': 'Household Role Distribution', 'comparison': comparison}
+                'error_pct': round(error_pct, 1),
+            })
+
+        return {'name': 'Household Position Distribution', 'comparison': comparison}
     
     def _compare_education_distribution(self) -> dict:
         """Compare education level distribution for adults 18+.
@@ -2167,21 +2241,26 @@ class GbgArea:
         hh_by_id = {h.household_id: h for h in self.households}
         
         # Synth: classify each individual into the 7-category scheme
+        # Use census Gift/Sambo ratio to split cohabiting (same as role comparison)
+        act_gift = actual.get('Gift/reg.partner', 0)
+        act_sambo = actual.get('Sambo', 0)
+        total_cohab_census = act_gift + act_sambo
+        gift_frac = act_gift / total_cohab_census if total_cohab_census > 0 else 0.5
+
+        cohab_ids = [ind.agent_id for ind in self.individuals if ind.hh_role == 'cohabiting']
+        n_gift = round(len(cohab_ids) * gift_frac)
+        gift_set = set(sorted(cohab_ids)[:n_gift])
+
         synth = {}
         for ind in self.individuals:
             role = ind.hh_role
             if role == 'child':
                 pos = 'Barn'
             elif role == 'cohabiting':
-                # Distinguish married vs sambo — check if household has
-                # another cohabiting adult (our model doesn't track marriage,
-                # so split 50/50 deterministically by agent_id parity)
-                if ind.agent_id % 2 == 0:
-                    pos = 'Gift/reg.partner'
-                else:
-                    pos = 'Sambo'
+                pos = 'Gift/reg.partner' if ind.agent_id in gift_set else 'Sambo'
+            elif role == 'single_parent':
+                pos = 'Ensam förälder'
             elif role == 'single':
-                # Could be ensamboende (1-person HH) or single parent
                 hh = hh_by_id.get(ind.household_id)
                 if hh and len(hh.members) == 1:
                     pos = 'Ensamboende'
@@ -2349,6 +2428,9 @@ class GbgArea:
             # Mark informational sections
             if key in ('median_income', 'hh_type_children', 'joint_role_age_sex'):
                 output("  (informational — excluded from MAPE grade)")
+            elif data.get('fit'):
+                f = data['fit']
+                output(f"  SAE={f['sae']:.4f}  X²={f['chi2']:.2f}(p={f['chi2_p']:.4f})  Z²={f['z2']:.2f}(p={f['z2_p']:.4f})")
         
         # Overall statistics
         if 'overall' in comparisons:
@@ -2368,6 +2450,19 @@ class GbgArea:
             output(f"    MAPE (unweighted):        {ov.get('mape', 0):.1f}%  ← treats all categories equally")
             output(f"    Weighted MAPE:            {ov.get('wmape', 0):.1f}%  ← weighted by category size")
             output(f"    Max Category Error:       {ov.get('max_pct_error', 0):.1f}%")
+            output("")
+            output("  Voas & Williamson (2001) — per-dimension then aggregated:")
+            output(f"    SAE median:               {ov.get('sae_median', 0):.4f}  ← lower is better")
+            output(f"    SAE mean:                 {ov.get('sae_mean', 0):.4f}")
+            output(f"    SAE max:                  {ov.get('sae_max', 0):.4f}")
+            output(f"    X² p-value (worst dim):   {ov.get('chi2_p_min', 0):.4f}  ← higher is better")
+            output(f"    Z² p-value (worst dim):   {ov.get('z2_p_min', 0):.4f}")
+            if ov.get('dim_metrics'):
+                output("")
+                output(f"    {'Dimension':<20} {'SAE':>8} {'X²':>10} {'X² p':>8} {'Z²':>10} {'Z² p':>8}")
+                output("    " + "-" * 64)
+                for dim_key, dm in ov['dim_metrics'].items():
+                    output(f"    {dim_key:<20} {dm['sae']:>8.4f} {dm['chi2']:>10.2f} {dm['chi2_p']:>8.4f} {dm['z2']:>10.2f} {dm['z2_p']:>8.4f}")
         
         output("=" * 70 + "\n")
     
