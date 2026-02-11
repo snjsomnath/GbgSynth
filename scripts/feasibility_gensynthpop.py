@@ -16,6 +16,9 @@ import sys
 import numpy as np
 import pandas as pd
 from gbgsynth import GbgSynth
+from gbgsynth.config import Config
+
+cfg = Config()
 
 TEST_AREAS = ['107', '301', '103']  # Haga, Gamlestaden, Majorna
 
@@ -139,24 +142,10 @@ for area_code in TEST_AREAS:
     # single parents -> 1 single-parent HH each
     # children -> assigned to couple or single-parent HHs
     
-    # Count by mapped role
-    role_map = {}
-    for role_name in census_roles.index:
-        rn = str(role_name).lower()
-        if 'ensamboende' in rn:
-            role_map[role_name] = 'single'
-        elif 'gift' in rn or 'sambo' in rn or 'par' in rn:
-            role_map[role_name] = 'cohabiting'
-        elif 'ensamstående' in rn or 'förälder' in rn:
-            role_map[role_name] = 'single_parent'
-        elif 'barn' in rn:
-            role_map[role_name] = 'child'
-        else:
-            role_map[role_name] = 'other'
-    
+    # Count by mapped role (using Config canonical lookups)
     mapped = {}
     for role_name, cnt in census_roles.items():
-        mapped_role = role_map.get(role_name, 'other')
+        mapped_role = cfg.translate_position(role_name)
         mapped[mapped_role] = mapped.get(mapped_role, 0) + cnt
     
     print(f"  Mapped census roles:")

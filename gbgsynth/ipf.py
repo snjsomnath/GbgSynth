@@ -1144,26 +1144,27 @@ class ConstrainedIPF:
         return None
     
     def _find_role_key(self, marginal: pd.Series, role: str) -> Optional[str]:
-        """Find the key in marginal matching a role."""
-        role_lower = role.lower()
-        for key in marginal.index:
-            key_lower = str(key).lower()
-            if role_lower == 'single' and ('ensam' in key_lower or 'single' in key_lower):
-                return key
-            elif role_lower == 'cohabiting' and ('samman' in key_lower or 'cohab' in key_lower):
-                return key
-            elif role_lower == 'child' and ('barn' in key_lower or 'child' in key_lower):
-                return key
-        return None
-    
+        """Find the key in marginal matching a role.
+
+        Delegates to ``Config.find_role_key()`` which uses exact dict
+        lookups from *table_mapping.json*.
+        """
+        from gbgsynth.config import Config
+        cfg = Config()
+        return cfg.find_role_key(marginal.index, role)
+
     def _find_sex_key(self, marginal: pd.Series, sex: str) -> Optional[str]:
-        """Find the key in marginal matching a sex."""
+        """Find the key in marginal matching a sex.
+
+        Uses ``Config._sex_lookup`` for exact matching.
+        """
+        from gbgsynth.config import Config
+        cfg = Config()
         sex_lower = sex.lower()
         for key in marginal.index:
-            key_lower = str(key).lower()
-            if sex_lower == 'male' and ('män' in key_lower or 'man' in key_lower or 'male' in key_lower):
-                return key
-            elif sex_lower == 'female' and ('kvinn' in key_lower or 'female' in key_lower):
+            k = str(key).strip().lower()
+            mapped = cfg._sex_lookup.get(k)
+            if mapped == sex_lower:
                 return key
         return None
     

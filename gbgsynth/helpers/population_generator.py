@@ -27,6 +27,11 @@ logger = logging.getLogger(__name__)
 
 
 # ── Translation helpers ─────────────────────────────────────────────────
+# All translations delegate to Config, which builds exact lookup dicts
+# from table_mapping.json at init time.  No substring matching here.
+
+_cfg = Config()
+
 
 def translate_sex(sex_str, *, strict: bool = False) -> str:
     """Translate Swedish sex label to internal ``'male'``/``'female'``."""
@@ -36,60 +41,22 @@ def translate_sex(sex_str, *, strict: bool = False) -> str:
             raise ValueError("NaN sex value in population data")
         return 'male'
 
-    sex_lower = str(sex_str).lower()
-    if 'kvinn' in sex_lower or 'female' in sex_lower:
-        return 'female'
-    if 'man' in sex_lower or 'män' in sex_lower or 'male' in sex_lower:
-        return 'male'
+    key = str(sex_str).strip().lower()
+    mapped = _cfg._sex_lookup.get(key)
+    if mapped:
+        return mapped
     logger.warning("Unrecognised sex value '%s' — defaulting to 'male'", sex_str)
     return 'male'
 
 
 def translate_hh_role(role_str) -> str:
     """Translate aggregate household type from Swedish."""
-    if pd.isna(role_str):
-        return 'single'
-
-    role_lower = str(role_str).lower()
-    if 'samman' in role_lower or 'cohab' in role_lower:
-        return 'cohabiting'
-    elif 'övrig' in role_lower or 'other' in role_lower:
-        return 'other'
-    return 'single'
+    return _cfg.translate_hh_role(role_str)
 
 
 def translate_hh_position(position_str) -> str:
-    """Translate detailed household position from Swedish.
-
-    The distinction between 'single' and 'single_parent' is critical:
-    ``'single'`` (Ensamboende) goes to 1-person households,
-    ``'single_parent'`` (Ensamstående förälder) goes to multi-person
-    households with children.
-
-    IMPORTANT: Check *övrig* BEFORE *ensamboende* because
-    ``"Ej ensamboende personer, övriga"`` matches both.
-    """
-    if pd.isna(position_str):
-        return 'single'
-
-    pos_lower = str(position_str).lower()
-
-    if 'barn' == pos_lower.strip():
-        return 'child'
-    elif 'övrig' in pos_lower:
-        return 'other'
-    elif 'ensamboende' in pos_lower:
-        return 'single'
-    elif 'ensamstående förälder' in pos_lower:
-        return 'single_parent'
-    elif 'gift par' in pos_lower or 'partnerskap' in pos_lower:
-        return 'cohabiting'
-    elif 'sambo' in pos_lower:
-        return 'cohabiting'
-    elif 'uppgift saknas' in pos_lower:
-        return 'unknown'
-
-    return 'single'
+    """Translate detailed household position from Swedish."""
+    return _cfg.translate_position(position_str)
 
 
 # ── Age helpers ──────────────────────────────────────────────────────────

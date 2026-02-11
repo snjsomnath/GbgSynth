@@ -455,8 +455,10 @@ def check_single_households(households, individuals, hh_members, hh_by_id) -> Li
         members = hh_members.get(hh.household_id, [])
         hh_type = getattr(hh, 'household_type', None)
         
-        # Check if marked as single
-        if hh_type and 'ensamstående' in str(hh_type).lower() and 'förälder' not in str(hh_type).lower():
+        # Check if marked as single (uses Config BEFOLKNING_HH lookup)
+        from gbgsynth.config import Config
+        _cfg = Config()
+        if hh_type and _cfg.translate_hh_role(hh_type) == 'single':
             if len(members) != 1:
                 violations.append(SanityViolation(
                     check_name="single_households_have_one_person",
@@ -479,8 +481,10 @@ def check_couple_households(households, individuals, hh_members, hh_by_id) -> Li
         members = hh_members.get(hh.household_id, [])
         hh_type = getattr(hh, 'household_type', None)
         
-        # Check if marked as couple/cohabiting
-        if hh_type and ('sammanboende' in str(hh_type).lower() or 'gift' in str(hh_type).lower()):
+        # Check if marked as couple/cohabiting (uses Config BEFOLKNING_HH lookup)
+        from gbgsynth.config import Config
+        _cfg = Config()
+        if hh_type and _cfg.is_couple_hh_type(hh_type):
             adults = [m for m in members if m.age >= MIN_ADULT_AGE]
             if len(adults) < 2:
                 violations.append(SanityViolation(
@@ -601,12 +605,18 @@ def check_household_type_consistency(households, individuals, hh_members, hh_by_
         if not hh_type:
             continue
             
-        hh_type_lower = str(hh_type).lower()
         adults = [m for m in members if m.age >= MIN_ADULT_AGE]
         children = [m for m in members if m.age < MIN_ADULT_AGE]
         
         # Single parent should have exactly 1 adult and at least 1 child
-        if 'ensamstående' in hh_type_lower and 'barn' in hh_type_lower:
+        # The BEFOLKNING_HH table labels single-parent households with
+        # both 'ensamstående' and 'barn'; use the aggregate role lookup
+        # and check if hh has children in member list.
+        from gbgsynth.config import Config
+        _cfg = Config()
+        hh_role = _cfg.translate_hh_role(hh_type)
+        has_child_members = len(children) > 0
+        if hh_role == 'single' and has_child_members:
             if len(adults) != 1:
                 violations.append(SanityViolation(
                     check_name="household_type_consistency",

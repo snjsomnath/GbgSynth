@@ -743,3 +743,217 @@ class TestIncomeSourceAgeConditioning:
         for age_range, sources in weights.items():
             assert set(sources.keys()) == expected_sources, \
                 f"Age band {age_range} missing sources: {expected_sources - set(sources.keys())}"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Deterministic Education Quota Tests
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestDeterministicEducationQuotas:
+    """Tests verifying that education assignment is deterministic (exact counts)."""
+
+    @pytest.fixture
+    def education_data(self):
+        """Education data with known counts per cell."""
+        rows = []
+        for sex in ['Man', 'Kvinna']:
+            for edu, count in [
+                ('Förgymnasial utbildning', 20),
+                ('Gymnasial utbildning', 50),
+                ('Eftergymnasial utbildning', 100),
+                ('Uppgift saknas', 5),
+            ]:
+                rows.append({
+                    'Ålder': '25-34 år',
+                    'Kön': sex,
+                    'Utbildningsnivå': edu,
+                    'Tabellvärde': 'Folkmängd',
+                    'Antal': count,
+                })
+        return pd.DataFrame(rows)
+
+    def test_exact_quota_reproduction(self, education_data):
+        """When agent count matches census total, counts must be exact."""
+        synth = PopulationSynthesizer()
+        # Census total per (25-34, male) cell = 20+50+100+5 = 175
+        synth.agents = [
+            Agent(agent_id=i, age=30, sex='male', hh_role='single')
+            for i in range(175)
+        ]
+        synth._assign_education_level(education_data)
+
+        counts = {}
+        for a in synth.agents:
+            counts[a.education] = counts.get(a.education, 0) + 1
+
+        assert counts['pre_secondary'] == 20
+        assert counts['secondary'] == 50
+        assert counts['post_secondary'] == 100
+        assert counts['unknown'] == 5
+
+    def test_scaled_quota_reproduction(self, education_data):
+        """When agent count differs from census, quotas are scaled proportionally."""
+        synth = PopulationSynthesizer()
+        # 350 agents = 2× census total → counts should be 2× each
+        synth.agents = [
+            Agent(agent_id=i, age=30, sex='male', hh_role='single')
+            for i in range(350)
+        ]
+        synth._assign_education_level(education_data)
+
+        counts = {}
+        for a in synth.agents:
+            counts[a.education] = counts.get(a.education, 0) + 1
+
+        # Total must equal 350
+        assert sum(counts.values()) == 350
+        # Scaled counts: 40, 100, 200, 10 (exact 2×)
+        assert counts['pre_secondary'] == 40
+        assert counts['secondary'] == 100
+        assert counts['post_secondary'] == 200
+        assert counts['unknown'] == 10
+
+    def test_determinism_across_runs(self, education_data):
+        """Repeated runs with the same seed produce identical assignments."""
+        import random as _random
+        results = []
+        for _ in range(3):
+            _random.seed(42)
+            synth = PopulationSynthesizer()
+            synth.agents = [
+                Agent(agent_id=i, age=30, sex='male', hh_role='single')
+                for i in range(175)
+            ]
+            synth._assign_education_level(education_data)
+            edu_list = [a.education for a in synth.agents]
+            results.append(edu_list)
+
+        assert results[0] == results[1] == results[2]
+
+    def test_all_agents_assigned(self, education_data):
+        """Every agent must have an education level (no None values)."""
+        synth = PopulationSynthesizer()
+        synth.agents = [
+            Agent(agent_id=i, age=30, sex='male', hh_role='single')
+            for i in range(500)
+        ] + [
+            Agent(agent_id=i + 500, age=10, sex='female', hh_role='child')
+            for i in range(50)
+        ]
+        synth._assign_education_level(education_data)
+
+        for a in synth.agents:
+            assert a.education is not None, f"Agent {a.agent_id} has None education"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Improved Couple Formation Tests
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestCoupleFormation:
+    """Tests for the improved couple formation algorithm."""
+
+    def _make_agents(self, specs):
+        """Create agents from (age, sex) specs."""
+        agents = []
+        for i, (age, sex) in enumerate(specs):
+            agents.append(Agent(
+                agent_id=i + 1, age=age, sex=sex, hh_role='cohabiting',
+            ))
+        return agents
+
+    def _make_households(self, sizes):
+        """Create empty households with given sizes."""
+        hhs = []
+        for i, size in enumerate(sizes):
+            hhs.append(Household(household_id=i + 1, size=size))
+        return hhs
+
+    def test_basic_couple_formation(self):
+        """One male + one female within age gap → one couple formed."""
+        from gbgsynth.helpers.household_matcher import form_couples
+
+        agents = self._make_agents([(30, 'male'), (28, 'female')])
+        hhs = self._make_households([2])
+
+        formed = form_couples(agents, hhs, {'partner_age_difference_max': 15})
+        assert formed == 1
+        assert all(a.household_id is not None for a in agents)
+
+    def test_maximises_couples(self):
+        """Algorithm should maximise the number of couples, not leave pairs unmatched."""
+        from gbgsynth.helpers.household_matcher import form_couples
+
+        # 50 males (age 25-74) + 50 females (age 25-74), all within 15yr gap
+        males = [(25 + i, 'male') for i in range(50)]
+        females = [(25 + i, 'female') for i in range(50)]
+        agents = self._make_agents(males + females)
+        hhs = self._make_households([2] * 50)
+
+        formed = form_couples(agents, hhs, {'partner_age_difference_max': 15})
+        assert formed == 50, f"Should form all 50 couples, got {formed}"
+
+    def test_respects_age_constraint(self):
+        """Couples must not violate max age difference."""
+        from gbgsynth.helpers.household_matcher import form_couples
+
+        agents = self._make_agents([(20, 'male'), (60, 'female')])
+        hhs = self._make_households([2])
+
+        formed = form_couples(agents, hhs, {'partner_age_difference_max': 15})
+        assert formed == 0, "40-year gap should not form a couple"
+
+    def test_limited_by_household_slots(self):
+        """Cannot form more couples than available multi-person households."""
+        from gbgsynth.helpers.household_matcher import form_couples
+
+        agents = self._make_agents(
+            [(30, 'male'), (30, 'female'), (35, 'male'), (35, 'female')]
+        )
+        hhs = self._make_households([2])  # Only 1 household
+
+        formed = form_couples(agents, hhs, {'partner_age_difference_max': 15})
+        assert formed == 1
+
+    def test_no_females_no_couples(self):
+        """All-male pool produces zero couples."""
+        from gbgsynth.helpers.household_matcher import form_couples
+
+        agents = self._make_agents([(30, 'male'), (35, 'male')])
+        hhs = self._make_households([2, 2])
+
+        formed = form_couples(agents, hhs, {'partner_age_difference_max': 15})
+        assert formed == 0
+
+    def test_closest_age_pairing(self):
+        """Pairs should prefer closest-age matches."""
+        from gbgsynth.helpers.household_matcher import form_couples
+
+        # Male 30, females 25 and 45 → should pair with 25 (gap 5 vs 15)
+        agents = self._make_agents([
+            (30, 'male'), (25, 'female'), (45, 'female'),
+        ])
+        hhs = self._make_households([2])
+
+        formed = form_couples(agents, hhs, {'partner_age_difference_max': 15})
+        assert formed == 1
+        # The male and the age-25 female should be in the same household
+        male = agents[0]
+        paired_female = [a for a in agents if a.sex == 'female' and a.household_id == male.household_id]
+        assert len(paired_female) == 1
+        assert paired_female[0].age == 25
+
+    def test_large_pool_efficiency(self):
+        """Stress test: 500 males + 500 females should form ≥490 couples."""
+        from gbgsynth.helpers.household_matcher import form_couples
+        import random as _random
+
+        _random.seed(42)
+        males = [(_random.randint(20, 70), 'male') for _ in range(500)]
+        females = [(_random.randint(20, 70), 'female') for _ in range(500)]
+        agents = self._make_agents(males + females)
+        hhs = self._make_households([2] * 500)
+
+        formed = form_couples(agents, hhs, {'partner_age_difference_max': 15})
+        # With uniform age distribution 20-70 and 15yr gap, should pair ≥98%
+        assert formed >= 490, f"Expected ≥490 couples from 500+500 pool, got {formed}"

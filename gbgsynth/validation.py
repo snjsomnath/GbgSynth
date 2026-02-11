@@ -532,29 +532,19 @@ class Validator:
     
     def _map_position_to_role(self, position: str) -> Optional[str]:
         """Map census household position to our role categories.
-        
-        Census positions:
-        - Person i gift par/registrerat partnerskap -> cohabiting
-        - Personer i samboförhållande -> cohabiting  
-        - Ensamstående förälder -> single
-        - Barn -> child
-        - Ensamboende -> single
-        - Ej ensamboende personer, övriga -> other
+
+        Delegates to ``Config.translate_position()`` which uses exact
+        dict lookup from *table_mapping.json* — no substring matching.
+        ``single_parent`` is folded into ``single`` for validation.
         """
-        position = position.lower()
-        if 'ensamboende' in position:
-            return 'single'
-        elif 'ensamstående förälder' in position:
-            return 'single'
-        elif 'gift par' in position or 'sambo' in position or 'partnerskap' in position:
-            return 'cohabiting'
-        elif 'barn' == position.strip() or position.strip() == 'barn':
-            return 'child'
-        elif 'övrig' in position:
-            return 'other'
-        elif 'uppgift saknas' in position:
+        from gbgsynth.config import Config
+        cfg = Config()
+        role = cfg.translate_position(position)
+        if role == 'unknown':
             return None  # Skip missing data
-        return None
+        if role == 'single_parent':
+            return 'single'  # Validation groups these together
+        return role
     
     def _normalize_age_group(self, age_str: str) -> Optional[str]:
         """Normalize census age group to our format.

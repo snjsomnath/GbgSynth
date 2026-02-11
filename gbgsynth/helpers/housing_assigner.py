@@ -22,16 +22,12 @@ logger = logging.getLogger(__name__)
 
 # ── Type translation helpers ─────────────────────────────────────────────
 
+_cfg = Config()
+
+
 def parse_house_type(type_str) -> str:
     """Parse house-type string to internal English label."""
-    if pd.isna(type_str):
-        return 'apartment'
-    type_lower = str(type_str).lower()
-    if 'småhus' in type_lower:
-        return 'detached_house'
-    elif 'special' in type_lower:
-        return 'special_housing'
-    return 'apartment'
+    return _cfg.translate_house_type(type_str)
 
 
 def normalize_building_type(building_type) -> str:
@@ -58,13 +54,7 @@ def normalize_building_type(building_type) -> str:
 
 def english_to_swedish_hustyp(house_type: Optional[str]) -> str:
     """Convert English house-type label to Swedish Hustyp."""
-    if house_type is None:
-        return 'Flerbostadshus'
-    return {
-        'detached_house': 'Småhus',
-        'apartment': 'Flerbostadshus',
-        'special_housing': 'Specialbostad',
-    }.get(house_type, 'Flerbostadshus')
+    return _cfg.english_to_hustyp(house_type)
 
 
 # ── Housing-type distribution ────────────────────────────────────────────

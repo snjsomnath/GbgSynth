@@ -490,12 +490,8 @@ class GbgArea:
         # Get floor area mappings from config
         floor_area_map = self.config._config.get('floor_area_mappings', {})
         
-        # House type Swedish -> English mapping
-        house_type_map = {
-            'Småhus': 'detached_house',
-            'Flerbostadshus': 'apartment',
-            'Övriga hus': 'other'
-        }
+        # House type Swedish -> English mapping (from Config)
+        house_type_map_fn = self.config.translate_house_type
         
         # Find the column names in the data
         hustyp_col = None
@@ -526,7 +522,7 @@ class GbgArea:
                 'min': 50, 'max': 80, 'midpoint': 65
             })
             
-            house_type = house_type_map.get(house_type_sv, 'other')
+            house_type = house_type_map_fn(house_type_sv)
             
             # Create dwelling units
             for _ in range(count):
@@ -1713,21 +1709,7 @@ class GbgArea:
         count_col = 'Antal' if 'Antal' in pos_data.columns else pos_data.columns[-1]
 
         # ── Map census position → 5 collapsed categories ─────────────
-        def collapsed_pos(pos_str: str) -> str:
-            ps = str(pos_str).lower()
-            if 'gift' in ps or 'partner' in ps or 'sambo' in ps:
-                return 'Sammanboende'
-            elif 'ensamstående förälder' in ps:
-                return 'Ensam förälder'
-            elif ps.startswith('barn'):
-                return 'Barn'
-            elif 'ensamboende' in ps:
-                return 'Ensamboende'
-            elif 'övriga' in ps or 'ej ensam' in ps:
-                return 'Övriga'
-            elif 'uppgift' in ps:
-                return 'Uppgift saknas'
-            return str(pos_str)[:16]
+        collapsed_pos = self.config.translate_position_collapsed
 
         # ── Census actual counts (aggregate over age × sex) ──────────
         actual: dict[str, int] = {}
@@ -1887,18 +1869,8 @@ class GbgArea:
             'no_income': 'Saknar ersättningar',
         }
         
-        # Reverse map for census → internal key → display
-        source_map = {
-            'Ersättning för arbete': 'work',
-            'Ersättning vid arbetslöshet': 'unemployment',
-            'Ersättning för studier': 'studies',
-            'Pension': 'pension',
-            'Ersättning vid långvarigt nedsatt arbetsförmåga': 'disability',
-            'Ersättning vid sjukdom': 'sickness',
-            'Ersättning vid föräldraledighet eller närståendeomvårdnad': 'parental_leave',
-            'Ekonomiskt stöd': 'financial_support',
-            'Saknar ersättningar': 'no_income',
-        }
+        # Reverse map for census → internal key → display (via Config)
+        _cfg = self.config
         
         # Find column names
         source_col = None
@@ -1915,7 +1887,7 @@ class GbgArea:
         actual = {}
         for _, row in source_data.iterrows():
             src_sv = row[source_col]
-            src_en = source_map.get(src_sv, src_sv)
+            src_en = _cfg.translate_income_source(src_sv)
             display = source_display.get(src_en, src_sv)
             count = int(row[count_col]) if pd.notna(row[count_col]) else 0
             actual[display] = actual.get(display, 0) + count
@@ -1975,14 +1947,8 @@ class GbgArea:
         if median_rows.empty:
             return {}
         
-        # Build census median income lookup
-        edu_map = {
-            'Förgymnasial utbildning': 'pre_secondary',
-            'Gymnasial utbildning': 'secondary',
-            'Eftergymnasial utbildning': 'post_secondary',
-            'Uppgift saknas': 'unknown',
-        }
-        sex_map_sv = {'Man': 'male', 'Kvinna': 'female'}
+        # Build census median income lookup (using Config lookups)
+        _cfg = self.config
         
         age_groups = [
             (18, 24, '18-24 år'),
@@ -1996,8 +1962,8 @@ class GbgArea:
         
         census_medians = {}  # (age_label, sex_en, edu_en) -> median_sek
         for _, row in median_rows.iterrows():
-            sex_en = sex_map_sv.get(row.get('Kön', ''))
-            edu_en = edu_map.get(row.get('Utbildningsnivå', ''))
+            sex_en = _cfg.translate_sex(row.get('Kön', ''))
+            edu_en = _cfg.translate_education(row.get('Utbildningsnivå', ''))
             age_label = row.get('Ålder', '')
             val = row.get('Antal', 0)
             if sex_en and edu_en and age_label and pd.notna(val) and val > 0:
@@ -2182,23 +2148,7 @@ class GbgArea:
         count_col = 'Antal' if 'Antal' in pos_data.columns else pos_data.columns[-1]
         
         # Simplify position labels for display
-        def short_pos(pos_str: str) -> str:
-            ps = str(pos_str).lower()
-            if 'gift' in ps or 'partner' in ps:
-                return 'Gift/reg.partner'
-            elif 'sambo' in ps:
-                return 'Sambo'
-            elif 'ensamstående förälder' in ps:
-                return 'Ensam förälder'
-            elif ps.startswith('barn'):
-                return 'Barn'
-            elif 'ensamboende' in ps:
-                return 'Ensamboende'
-            elif 'övriga' in ps or 'ej ensam' in ps:
-                return 'Övriga'
-            elif 'uppgift' in ps:
-                return 'Uppgift saknas'
-            return str(pos_str)[:16]
+        short_pos = self.config.translate_position_detailed
         
         # Map internal role → census position (for synth counting)
         # The census has 7 detailed positions; we map our simplified roles
