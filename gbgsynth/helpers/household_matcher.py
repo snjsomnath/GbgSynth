@@ -22,7 +22,11 @@ def form_couples(
     multi_hh: List[Household],
     constraints: Dict,
 ) -> int:
-    """Place male-female pairs in multi-person households.
+    """Place couples in multi-person households.
+
+    Supports both opposite-sex and same-sex couples.  The fraction of
+    same-sex couples is controlled by the ``same_sex_couple_fraction``
+    constraint (default 2.5%, matching Swedish registry statistics).
 
     Uses a two-pointer sweep on age-sorted pools to *maximise* the number
     of couples formed.  The previous first-fit O(n²) approach exhausted
@@ -36,6 +40,8 @@ def form_couples(
        pointer, preferring the female whose age is closest.
     3. Collect all valid pairs, then assign them to households that can
        fit ≥2 members.
+    4. If ``allow_same_sex_couples`` is enabled, a fraction of pairs are
+       formed as same-sex from remaining unmatched cohabiting adults.
 
     This separates *pairing* from *placement*, ensuring we maximise the
     number of formed couples regardless of household iteration order.
@@ -44,6 +50,8 @@ def form_couples(
         Number of couples formed.
     """
     max_age_diff = constraints.get('partner_age_difference_max', 15)
+    allow_same_sex = constraints.get('allow_same_sex_couples', False)
+    ss_fraction = constraints.get('same_sex_couple_fraction', 0.025)
 
     males = sorted(
         [a for a in cohabiting if a.sex == 'male'],
@@ -62,10 +70,10 @@ def form_couples(
     if not hh_with_space:
         return 0
 
-    # --- Phase 1: build all valid pairs using greedy closest-age matching ---
+    # --- Phase 1: build opposite-sex pairs using greedy closest-age matching ---
     paired_males: Set[int] = set()
     paired_females: Set[int] = set()
-    pairs: List[tuple] = []  # (male, female)
+    pairs: List[tuple] = []  # (agent_a, agent_b)
 
     # For each male, find the closest compatible female
     fem_ptr = 0
@@ -94,15 +102,58 @@ def form_couples(
             paired_males.add(id(male))
             paired_females.add(id(best_female))
 
+    # --- Phase 1b: form same-sex pairs from remaining cohabiting adults ---
+    if allow_same_sex and ss_fraction > 0:
+        total_couples = len(pairs)
+        n_same_sex = max(1, int(round(total_couples * ss_fraction / (1 - ss_fraction))))
+
+        unpaired_males = [a for a in males if id(a) not in paired_males]
+        unpaired_females = [a for a in females if id(a) not in paired_females]
+
+        ss_paired: Set[int] = set()
+        ss_pairs: List[tuple] = []
+
+        # Form male-male pairs
+        mm_target = n_same_sex // 2
+        unpaired_males.sort(key=lambda a: a.age)
+        for i in range(0, len(unpaired_males) - 1, 2):
+            if len(ss_pairs) >= mm_target:
+                break
+            a, b = unpaired_males[i], unpaired_males[i + 1]
+            if abs(a.age - b.age) <= max_age_diff:
+                ss_pairs.append((a, b))
+                ss_paired.add(id(a))
+                ss_paired.add(id(b))
+
+        # Form female-female pairs
+        ff_target = n_same_sex - len(ss_pairs)
+        unpaired_females.sort(key=lambda a: a.age)
+        for i in range(0, len(unpaired_females) - 1, 2):
+            if len(ss_pairs) >= n_same_sex:
+                break
+            a, b = unpaired_females[i], unpaired_females[i + 1]
+            if abs(a.age - b.age) <= max_age_diff:
+                ss_pairs.append((a, b))
+                ss_paired.add(id(a))
+                ss_paired.add(id(b))
+
+        pairs.extend(ss_pairs)
+        if ss_pairs:
+            logger.info(
+                "Formed %d same-sex couples (%.1f%% of total)",
+                len(ss_pairs),
+                100 * len(ss_pairs) / len(pairs) if pairs else 0,
+            )
+
     # --- Phase 2: assign pairs to households ---
     couples_formed = 0
     hh_idx = 0
-    for male, female in pairs:
+    for agent_a, agent_b in pairs:
         if hh_idx >= len(hh_with_space):
             break
         hh = hh_with_space[hh_idx]
-        hh.add_member(male)
-        hh.add_member(female)
+        hh.add_member(agent_a)
+        hh.add_member(agent_b)
         couples_formed += 1
         hh_idx += 1
 
@@ -385,7 +436,7 @@ def redistribute_unplaced(
         overflow_children = [a for a in still_unplaced if id(a) in children_ids]
 
         shuffled_hh = list(all_hh)
-        random.shuffle(shuffled_hh)
+        random.Random().shuffle(shuffled_hh)  # local shuffle — non-critical path
 
         for i, agent in enumerate(overflow_adults):
             hh = shuffled_hh[i % len(shuffled_hh)]
@@ -459,7 +510,7 @@ def fix_children_only_households(
                 break
         else:
             if hh_with_adults:
-                target = random.choice(hh_with_adults)
+                target = random.Random().choice(hh_with_adults)  # non-critical overflow
                 target.size += 1
                 target.add_member(child)
                 moved += 1

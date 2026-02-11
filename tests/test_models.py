@@ -161,6 +161,16 @@ class TestAgent:
         # Default behavior doesn't allow same-sex partnerships
         assert not male1.can_be_partner_with(male2)
 
+    def test_can_be_partner_with_same_sex_allowed(self):
+        """Test partnership with same-sex agents when explicitly allowed."""
+        male1 = Agent(agent_id=1, age=35, sex='male')
+        male2 = Agent(agent_id=2, age=32, sex='male')
+        female1 = Agent(agent_id=3, age=30, sex='female')
+        female2 = Agent(agent_id=4, age=28, sex='female')
+
+        assert male1.can_be_partner_with(male2, allow_same_sex=True)
+        assert female1.can_be_partner_with(female2, allow_same_sex=True)
+
     def test_can_be_partner_with_age_difference_limit(self):
         """Test partnership with large age difference."""
         young = Agent(agent_id=1, age=25, sex='male')

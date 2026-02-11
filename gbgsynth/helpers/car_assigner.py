@@ -34,6 +34,8 @@ def assign_cars_propensity(
     agents: List[Agent],
     car_data: Optional[pd.DataFrame],
     constraints: Dict,
+    *,
+    rng: Optional[random.Random] = None,
 ) -> None:
     """Assign cars to households using propensity scoring.
 
@@ -45,7 +47,10 @@ def assign_cars_propensity(
         agents: All synthesized agents (used for fallback pop count).
         car_data: DataFrame with ``Personbilar`` count.
         constraints: Constraints dict (for ``max_cars_per_household``).
+        rng: Optional local ``random.Random`` instance.
+            Falls back to module-level ``random`` if not provided.
     """
+    _rng = rng or random
     if not households:
         return
 
@@ -119,7 +124,7 @@ def assign_cars_propensity(
         hh_scores.append((hh, max(score, 0.1)))  # Ensure positive score
 
     hh_scores.sort(
-        key=lambda x: x[1] * random.uniform(0.8, 1.2),
+        key=lambda x: x[1] * _rng.uniform(0.8, 1.2),
         reverse=True,
     )
 

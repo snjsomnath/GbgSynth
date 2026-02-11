@@ -9,7 +9,7 @@ Simple API:
 For advanced usage, see the documentation.
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 # Core API - what most users need
 from gbgsynth.gbgsynth import GbgSynth
@@ -80,30 +80,24 @@ from gbgsynth.data_utils import (
     get_mel_shapefile_path,
 )
 
-__version__ = "0.3.0"
 __all__ = [
-    # Core
     "GbgSynth",
     "GbgArea",
     "Agent",
     "Household",
     "Dwelling",
-    # Exceptions
     "GbgSynthError",
     "AreaNotFoundError",
     "APIError",
     "DataNotGeneratedError",
     "InvalidDataError",
     "PrivacySuppressionError",
-    # Modules
     "plotting",
     "validation",
     "exporters",
-    # Exporters
     "get_exporter",
     "list_exporters",
     "SweLoadSimConfig",
-    # Data utilities
     "download_pri_shapefile",
     "download_mel_shapefile",
     "download_footprints",
@@ -123,7 +117,6 @@ __all__ = [
     "get_neighbourhood_heights_path",
     "get_missing_neighbourhood_heights",
     "get_mel_shapefile_path",
-    # Prognosis scaling
     "prognosis",
     "PrognosisScaler",
     "PrognosisClient",

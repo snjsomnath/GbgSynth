@@ -16,7 +16,7 @@ values, age-group sampling, and role probability tables live here.
 import logging
 import random
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 import pandas as pd
 
@@ -92,39 +92,48 @@ def sample_age_from_group(
     config: Config,
     *,
     strict: bool = False,
+    rng: Optional[random.Random] = None,
 ) -> int:
     """Sample a specific age uniformly from an age-group range.
 
     Tries the config's ``age_group_mappings`` first, then parses
     ``"X-Y år"`` / ``"X- år"`` patterns.
+
+    Args:
+        age_group: Age-group label (e.g. ``"25-34 år"``).
+        config: Config object.
+        strict: Raise on parse errors.
+        rng: Optional local ``random.Random`` instance.
+            Falls back to module-level ``random`` if not provided.
     """
+    _rng = rng or random
     if pd.isna(age_group):
         logger.warning("NaN age group encountered — using random age 25–65")
         if strict:
             raise ValueError("NaN age group in population data")
-        return random.randint(25, 65)
+        return _rng.randint(25, 65)
 
     age_mappings = config.age_group_mappings
 
     if age_group in age_mappings:
         range_dict = age_mappings[age_group]
-        return random.randint(range_dict['min'], range_dict['max'])
+        return _rng.randint(range_dict['min'], range_dict['max'])
 
     age_str = str(age_group).strip()
 
     match = re.match(r'(\d+)-(\d+)\s*år', age_str)
     if match:
-        return random.randint(int(match.group(1)), int(match.group(2)))
+        return _rng.randint(int(match.group(1)), int(match.group(2)))
 
     match = re.match(r'(\d+)[-+]\s*år', age_str)
     if match:
         min_age = int(match.group(1))
-        return random.randint(min_age, min_age + 15)
+        return _rng.randint(min_age, min_age + 15)
 
     logger.warning("Could not parse age group '%s' — using random age 25–65", age_group)
     if strict:
         raise ValueError(f"Unparseable age group: '{age_group}'")
-    return random.randint(25, 65)
+    return _rng.randint(25, 65)
 
 
 # ── Role probability table ──────────────────────────────────────────────
@@ -185,10 +194,13 @@ def sample_role_for_agent(
     age: int,
     sex: str,
     role_probs: Dict,
+    *,
+    rng: Optional[random.Random] = None,
 ) -> str:
     """Sample a household role using census probabilities."""
+    _rng = rng or random
     if not role_probs:
-        return 'child' if age < 18 else random.choice(['single', 'cohabiting'])
+        return 'child' if age < 18 else _rng.choice(['single', 'cohabiting'])
 
     age_group_label = age_to_group(age)
     probs = role_probs.get((age_group_label, sex))
@@ -201,11 +213,11 @@ def sample_role_for_agent(
                 break
 
     if not probs:
-        return 'child' if age < 18 else random.choice(['single', 'cohabiting'])
+        return 'child' if age < 18 else _rng.choice(['single', 'cohabiting'])
 
     roles = list(probs.keys())
     weights = [probs[r] for r in roles]
-    return random.choices(roles, weights=weights, k=1)[0]
+    return _rng.choices(roles, weights=weights, k=1)[0]
 
 
 # ── Individual generators ────────────────────────────────────────────────
@@ -216,6 +228,7 @@ def generate_individuals_from_position_data(
     start_id: int = 1,
     *,
     strict: bool = False,
+    rng: Optional[random.Random] = None,
 ) -> tuple:
     """Generate individuals with *exact* role counts from position data.
 
@@ -224,6 +237,7 @@ def generate_individuals_from_position_data(
         config: Config object (for age-group mappings).
         start_id: Starting agent ID.
         strict: Raise on parse errors.
+        rng: Optional local ``random.Random`` instance.
 
     Returns:
         ``(pool, next_id)`` — list of :class:`Agent` and next unused ID.
@@ -265,7 +279,7 @@ def generate_individuals_from_position_data(
         role_counts[hh_role] = role_counts.get(hh_role, 0) + count
 
         for _ in range(count):
-            age = sample_age_from_group(age_group, config, strict=strict)
+            age = sample_age_from_group(age_group, config, strict=strict, rng=rng)
             agent = Agent(agent_id=next_id, age=age, sex=sex, hh_role=hh_role)
             pool.append(agent)
             next_id += 1
@@ -281,6 +295,7 @@ def generate_individuals_from_population_data(
     role_probs: Optional[Dict] = None,
     *,
     strict: bool = False,
+    rng: Optional[random.Random] = None,
 ) -> tuple:
     """Generate individuals from population data with role sampling.
 
@@ -293,6 +308,7 @@ def generate_individuals_from_population_data(
         role_probs: Optional role-probability lookup built by
             :func:`build_role_probability_table`.
         strict: Raise on parse errors.
+        rng: Optional local ``random.Random`` instance.
 
     Returns:
         ``(pool, next_id)``.
@@ -325,10 +341,10 @@ def generate_individuals_from_population_data(
         sex = translate_sex(sex_label, strict=strict)
 
         for _ in range(count):
-            age = sample_age_from_group(age_group, config, strict=strict)
+            age = sample_age_from_group(age_group, config, strict=strict, rng=rng)
 
             if role_probs:
-                hh_role = sample_role_for_agent(age, sex, role_probs)
+                hh_role = sample_role_for_agent(age, sex, role_probs, rng=rng)
             else:
                 hh_role = translate_hh_role(role_label)
                 if age < 18 and hh_role != 'cohabiting':

@@ -66,10 +66,11 @@ class PopulationSynthesizer:
         Args:
             config: Configuration object (will create default if None)
             random_seed: Optional seed for reproducible synthesis.
-                If provided, ``random.seed()`` and ``np.random.seed()``
-                are called at the start of every ``synthesize()`` invocation
-                so that repeated runs with the same seed yield identical
-                synthetic populations.
+                If provided, local ``random.Random()`` and
+                ``np.random.default_rng()`` instances are created at the
+                start of every ``synthesize()`` invocation, ensuring
+                repeated runs with the same seed yield identical
+                synthetic populations without affecting global RNG state.
             strict: If True, raise ``ValueError`` on data quality issues
                 instead of logging warnings and falling back to defaults.
             engine: Synthesis algorithm to use.  One of:
@@ -101,6 +102,11 @@ class PopulationSynthesizer:
 
         # Synthesis statistics
         self.stats: Dict = {}
+
+        # Local RNG instances — avoids mutating global random state.
+        # Created fresh at each synthesize() call when a seed is provided.
+        self._rng: random.Random = random.Random()
+        self._np_rng: np.random.Generator = np.random.default_rng()
 
         # Declared up-front so the class interface is transparent (eng-003)
         self._household_position_data: Optional[pd.DataFrame] = None
@@ -152,9 +158,12 @@ class PopulationSynthesizer:
 
         # ── Seed RNGs for reproducibility (eng-001) ─────────────────────
         if self.random_seed is not None:
-            random.seed(self.random_seed)
-            np.random.seed(self.random_seed)
+            self._rng = random.Random(self.random_seed)
+            self._np_rng = np.random.default_rng(self.random_seed)
             logger.info(f"RNG seeded with {self.random_seed} for reproducibility")
+        else:
+            self._rng = random.Random()
+            self._np_rng = np.random.default_rng()
 
         # ── Validate inputs (eng-005) ───────────────────────────────────
         self._validate_inputs(
@@ -214,16 +223,18 @@ class PopulationSynthesizer:
             _se.assign_income_source(self.agents, income_source_data)
 
         # Assign housing types using size-conditioned distribution.
-        _ha.assign_housing_types(household_data, self.config, self.households)
+        _ha.assign_housing_types(household_data, self.config, self.households,
+                                 rng=self._rng)
 
         # Assign cars using propensity model with exact target
         _ca.assign_cars_propensity(
             self.households, self.agents, car_data, self.constraints,
+            rng=self._rng,
         )
 
         # Link to building footprints (if provided)
         if buildings is not None:
-            _ha.link_to_buildings(buildings, self.households)
+            _ha.link_to_buildings(buildings, self.households, rng=self._rng)
             logger.debug("Linked households to building footprints")
 
         # Validation
@@ -377,21 +388,7 @@ class PopulationSynthesizer:
         size distribution is exact. Then we fit individuals into those containers
         using role-aware assignment.
 
-        TODO(stat-012): INDEPENDENT MARGINALS — This approach treats the
-        population marginals (age, sex, role) as independent and the household
-        marginals (size, type) as independent. The greedy matching then
-        tries to reconcile them post-hoc. This destroys the correlation
-        structure: age×income, education×housing, household_size×age_of_head.
-        The IPF/IPU approach (see _synthesize_with_ipf, _synthesize_with_
-        constrained_ipf) preserves these correlations by fitting a joint
-        distribution. Activate one of those engines (see arch-003).
 
-        TODO(stat-013): MARGINAL RECONCILIATION — Census data often has
-        discrepancies between population and household tables due to
-        statistical disclosure control. Best practice (Müller & Axhausen,
-        2011) is to reconcile marginals BEFORE synthesis using entropy
-        maximisation or quadratic programming. Currently this discrepancy
-        is handled by ad-hoc redistribution in _redistribute_unplaced_topdown.
         
         Args:
             population_data: DataFrame with age/sex/hh_role counts
@@ -421,6 +418,7 @@ class PopulationSynthesizer:
             individual_pool, self.next_agent_id = _pg.generate_individuals_from_position_data(
                 self._household_position_data, self.config,
                 start_id=self.next_agent_id, strict=self.strict,
+                rng=self._rng,
             )
         else:
             logger.info("Falling back to population data with role sampling")
@@ -428,6 +426,7 @@ class PopulationSynthesizer:
                 population_data, self.config,
                 start_id=self.next_agent_id, role_probs=self._role_probs,
                 strict=self.strict,
+                rng=self._rng,
             )
         
         logger.info(f"Generated {len(individual_pool)} individuals from marginals")
@@ -453,12 +452,12 @@ class PopulationSynthesizer:
         multi_hh = [h for h in containers_by_size if h.size >= 2]
         
         # Shuffle for randomization
-        random.shuffle(singles)
-        random.shuffle(single_parents)
-        random.shuffle(cohabiting)
-        random.shuffle(children)
-        random.shuffle(other)
-        random.shuffle(multi_hh)
+        self._rng.shuffle(singles)
+        self._rng.shuffle(single_parents)
+        self._rng.shuffle(cohabiting)
+        self._rng.shuffle(children)
+        self._rng.shuffle(other)
+        self._rng.shuffle(multi_hh)
         
         # Step 3a: Form couples in multi-person households
         logger.info("Step 3a: Forming couples in multi-person households")

@@ -189,13 +189,20 @@ class Agent:
         hh = f"hh={self.household_id}" if self.household_id else "unassigned"
         return f"Agent(id={self.agent_id}, {self.age}y {self.sex[0].upper()}, {self.hh_role}, {hh})"
 
-    def can_be_partner_with(self, other: 'Agent', max_age_diff: int = 10) -> bool:
+    def can_be_partner_with(
+        self,
+        other: 'Agent',
+        max_age_diff: int = 10,
+        allow_same_sex: bool = False,
+    ) -> bool:
         """
         Check if this agent can be partnered with another agent.
 
         Args:
             other: Another agent to check compatibility with
             max_age_diff: Maximum age difference allowed
+            allow_same_sex: If True, allow same-sex partnerships.
+                Approximately 2-3% of Swedish couples are same-sex.
 
         Returns:
             True if partnership constraints are satisfied
@@ -208,8 +215,8 @@ class Agent:
         if abs(self.age - other.age) > max_age_diff:
             return False
 
-        # Different sex (can be modified for same-sex couples if data available)
-        if self.sex == other.sex:
+        # Sex constraint
+        if not allow_same_sex and self.sex == other.sex:
             return False
 
         return True

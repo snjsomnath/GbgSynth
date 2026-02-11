@@ -178,14 +178,19 @@ class IPFSynthesizer:
     def sample(
         self,
         n_samples: int,
-        random_state: Optional[int] = None
+        random_state: Optional[int] = None,
+        np_rng: Optional[np.random.Generator] = None,
     ) -> pd.DataFrame:
         """
         Sample from the fitted distribution.
         
         Args:
             n_samples: Number of samples to draw
-            random_state: Random seed for reproducibility
+            random_state: Random seed for reproducibility (creates
+                a local ``np.random.Generator`` — does not mutate
+                global state).
+            np_rng: Optional pre-created ``np.random.Generator``.
+                Takes precedence over *random_state*.
             
         Returns:
             DataFrame with sampled category combinations
@@ -193,15 +198,19 @@ class IPFSynthesizer:
         if self.fitted_weights is None:
             raise ValueError("Must call fit() before sample()")
         
-        if random_state is not None:
-            np.random.seed(random_state)
+        if np_rng is not None:
+            _rng = np_rng
+        elif random_state is not None:
+            _rng = np.random.default_rng(random_state)
+        else:
+            _rng = np.random.default_rng()
         
         # Flatten weights to 1D probability distribution
         flat_weights = self.fitted_weights.flatten()
         probs = flat_weights / flat_weights.sum()
         
         # Sample indices
-        flat_indices = np.random.choice(
+        flat_indices = _rng.choice(
             len(flat_weights),
             size=n_samples,
             p=probs
@@ -1428,13 +1437,15 @@ def run_constrained_ipf_engine(
     total_hh_type = hh_type_marginal.sum()
     hh_type_probs = hh_type_marginal / total_hh_type
 
+    _np_rng = np.random.default_rng()
+
     agents: List[Agent] = []
     households: List[Household] = []
     next_id = start_agent_id
     next_hh_id = start_household_id
 
     for hh_data in sampled:
-        ht_label = np.random.choice(hh_type_probs.index, p=hh_type_probs.values)
+        ht_label = _np_rng.choice(hh_type_probs.index, p=hh_type_probs.values)
         house_type = _ha.parse_house_type(ht_label)
         hh = Household(
             household_id=next_hh_id,

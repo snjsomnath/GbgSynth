@@ -1,13 +1,21 @@
 """Setup configuration for the GbgSynth library."""
 
+import re
 from setuptools import setup, find_packages
 
 with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
+# Single source of truth: read version from gbgsynth/__init__.py
+with open("gbgsynth/__init__.py", "r", encoding="utf-8") as fh:
+    _version_match = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']', fh.read(), re.M)
+    if not _version_match:
+        raise RuntimeError("Unable to find __version__ in gbgsynth/__init__.py")
+    _version = _version_match.group(1)
+
 setup(
     name="gbgsynth",
-    version="0.4.0",
+    version=_version,
     author="Sanjay Somanath",
     author_email="sanjay.somanath@chalmers.se",
     description="Synthetic population generator for Gothenburg using PxWeb API",
@@ -32,10 +40,10 @@ setup(
         "requests>=2.28.0",
         "pandas>=1.5.0",
         "numpy>=1.23.0",
+        "scipy>=1.10.0",
         "geopandas>=0.12.0",
         "matplotlib>=3.6.0",
         "seaborn>=0.12.0",
-        
     ],
     extras_require={
         "dev": [

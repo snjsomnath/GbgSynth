@@ -149,9 +149,10 @@ class PrognosisClient:
         cache_ttl_days: int = 30,
         request_delay: float = 0.2,
     ):
+        from gbgsynth import __version__
         self._session = requests.Session()
         self._session.headers.update({
-            "User-Agent": "GbgSynth/0.3.0 Python Population Synthesizer",
+            "User-Agent": f"GbgSynth/{__version__} Python Population Synthesizer",
             "Accept": "application/json",
         })
         self._request_delay = request_delay

@@ -108,14 +108,23 @@ def assign_housing_types(
     hh_hustyp_dist: pd.DataFrame,
     config: Config,
     households: Optional[List[Household]] = None,
+    *,
+    rng: Optional[random.Random] = None,
 ) -> List[Household]:
     """Assign Hustyp labels to *households* using size-conditioned probs.
 
     Also sets ``hh.house_type`` (English label) to stay consistent.
 
+    Args:
+        hh_hustyp_dist: Household data with size/type counts.
+        config: Config object.
+        households: Households to assign.
+        rng: Optional local ``random.Random`` instance.
+
     Returns:
         The same list of households (mutated in place).
     """
+    _rng = rng or random
     if households is None or len(households) == 0:
         logger.warning("No households to assign housing types to")
         return []
@@ -129,7 +138,7 @@ def assign_housing_types(
     for hh in households:
         if hh.size in size_distributions:
             dist = size_distributions[hh.size]
-            hustyp = random.choices(
+            hustyp = _rng.choices(
                 list(dist.keys()), weights=list(dist.values())
             )[0]
         else:
@@ -156,12 +165,24 @@ def link_to_buildings(
     building_type_col: str = 'type',
     capacity_col: Optional[str] = None,
     income_weighted: bool = False,
+    *,
+    rng: Optional[random.Random] = None,
 ) -> List[Household]:
     """Link households to building footprints by house-type matching.
+
+    Args:
+        buildings: Building footprint DataFrame.
+        households: Households to link.
+        building_id_col: Column name for building IDs.
+        building_type_col: Column name for building types.
+        capacity_col: Optional column name for building capacity.
+        income_weighted: Sort by income before assignment.
+        rng: Optional local ``random.Random`` instance.
 
     Returns:
         The same list of households (mutated in place).
     """
+    _rng = rng or random
     if households is None or len(households) == 0:
         logger.warning("No households to link to buildings")
         return []
@@ -216,7 +237,7 @@ def link_to_buildings(
                 )
 
         if len(compatible) > 0:
-            selected_idx = random.choice(compatible.index.tolist())
+            selected_idx = _rng.choice(compatible.index.tolist())
             raw_bid = compatible.loc[selected_idx, building_id_col]
             bid_key = int(str(raw_bid))  # type: ignore[arg-type]
             hh.building_id = str(raw_bid)
