@@ -269,7 +269,11 @@ class GbgSynth:
         
         Args:
             area: Area identifier in any of the formats above
-            **kwargs: Passed to generate()
+            **kwargs: Passed to generate().  Notable options:
+                - ``engine`` (str): ``'topdown'`` (default), ``'ipf'``,
+                  or ``'constrained_ipf'``.
+                - ``buildings`` (DataFrame): Building footprints.
+                - ``allocate_dwellings`` (bool): Default ``True``.
             
         Returns:
             GbgArea object with generated population
@@ -280,9 +284,9 @@ class GbgSynth:
         Example:
             >>> city = GbgSynth(2024)
             >>> haga = city.synthesize("Haga")
-            >>> print(len(haga.individuals))
+            >>> haga_ipf = city.synthesize("Haga", engine="ipf")
             
-            # All of these produce the same result:
+            # Flexible area matching:
             >>> city.synthesize("107")
             >>> city.synthesize("Haga")
             >>> city.synthesize("haga")

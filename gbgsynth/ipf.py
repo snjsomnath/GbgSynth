@@ -3,12 +3,22 @@ Iterative Proportional Fitting (IPF) for population synthesis.
 
 IPF adjusts a multi-dimensional contingency table to match known marginal totals
 while preserving the joint distribution structure of the original data.
+
+This module also contains the IPF and Constrained-IPF *engine* functions
+used by :class:`gbgsynth.synthesizer.PopulationSynthesizer` when the user
+selects ``engine='ipf'`` or ``engine='constrained_ipf'``.
 """
 
+from __future__ import annotations
+
 import logging
+import random
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from gbgsynth.models import Agent, Household
 
 logger = logging.getLogger(__name__)
 
@@ -1241,3 +1251,351 @@ class ConstrainedIPF:
             'iterations': self.fit_stats.get('iterations', 0),
             'converged': self.fit_stats.get('converged', False)
         }
+
+
+# =========================================================================
+# Engine functions — called by PopulationSynthesizer.synthesize()
+# =========================================================================
+
+def run_ipf_engine(
+    population_data: pd.DataFrame,
+    household_data: pd.DataFrame,
+    car_data: Optional[pd.DataFrame],
+    constraints: Dict,
+    config,
+    start_agent_id: int = 1,
+    start_household_id: int = 1,
+) -> Tuple[List["Agent"], List["Household"], int, int, Dict]:
+    """Run the IPF synthesis engine.
+
+    1. Fit household size × housing type via 2-D IPF.
+    2. Fit age × sex × role via 3-D IPF.
+    3. Sample households and individuals.
+    4. Match individuals to households.
+
+    Returns:
+        ``(agents, households, next_agent_id, next_household_id, ipf_stats)``
+    """
+    from gbgsynth.models import Agent, Household
+    from gbgsynth.helpers import household_factory as _hf
+    from gbgsynth.helpers import housing_assigner as _ha
+    from gbgsynth.helpers import population_generator as _pg
+    from gbgsynth.helpers import car_assigner as _ca
+
+    # ── Step 1: Fit household distribution ──
+    logger.info("IPF Step 1: Fitting household distribution")
+
+    hh_size_col = 'Hushållsstorlek' if 'Hushållsstorlek' in household_data.columns else 'hh_size'
+    hh_type_col = 'Hustyp' if 'Hustyp' in household_data.columns else 'house_type'
+    count_col = 'Antal' if 'Antal' in household_data.columns else household_data.columns[-1]
+
+    hh_size_marginal = household_data.groupby(hh_size_col)[count_col].sum()
+    hh_type_marginal = household_data.groupby(hh_type_col)[count_col].sum()
+
+    hh_ipf = IPFSynthesizer()
+    hh_ipf.fit_2d(hh_size_marginal, hh_type_marginal)
+
+    total_hh = int(hh_size_marginal.sum())
+    hh_samples = hh_ipf.sample(total_hh)
+
+    hh_fit_stats = hh_ipf.compute_fit_statistics({
+        'row': hh_size_marginal,
+        'col': hh_type_marginal,
+    })
+    logger.info("Household IPF: RMSE=%.2f, converged=%s",
+                hh_fit_stats['rmse'], hh_fit_stats['converged'])
+
+    # ── Step 2: Create household objects ──
+    logger.info("IPF Step 2: Creating households from IPF samples")
+
+    households: List[Household] = []
+    next_hh_id = start_household_id
+    for _, row in hh_samples.iterrows():
+        size = _hf.parse_household_size(row['row'], config)
+        house_type = _ha.parse_house_type(row['col'])
+        hh = Household(
+            household_id=next_hh_id,
+            size=size,
+            house_type=house_type,
+            cars=0,
+            assigned_hustyp=row['col'],
+        )
+        households.append(hh)
+        next_hh_id += 1
+
+    logger.info("Created %d households from IPF", len(households))
+
+    # ── Step 3: Fit population distribution ──
+    logger.info("IPF Step 3: Fitting population distribution")
+
+    age_col = 'Ålder' if 'Ålder' in population_data.columns else 'age_group'
+    sex_col = 'Kön' if 'Kön' in population_data.columns else 'sex'
+    role_col = 'Hushållstyp' if 'Hushållstyp' in population_data.columns else 'hh_role'
+
+    age_marginal = population_data.groupby(age_col)[count_col].sum()
+    sex_marginal = population_data.groupby(sex_col)[count_col].sum()
+    role_marginal = population_data.groupby(role_col)[count_col].sum()
+
+    pop_ipf = IPFSynthesizer()
+    pop_ipf.fit({
+        'age': age_marginal,
+        'sex': sex_marginal,
+        'role': role_marginal,
+    })
+
+    total_pop = int(age_marginal.sum())
+    pop_samples = pop_ipf.sample(total_pop)
+
+    pop_fit_stats = pop_ipf.compute_fit_statistics({
+        'age': age_marginal,
+        'sex': sex_marginal,
+        'role': role_marginal,
+    })
+    logger.info("Population IPF: RMSE=%.2f, converged=%s",
+                pop_fit_stats['rmse'], pop_fit_stats['converged'])
+
+    # ── Step 4: Create agents ──
+    logger.info("IPF Step 4: Creating agents from IPF samples")
+
+    pool: List[Agent] = []
+    next_id = start_agent_id
+    for _, row in pop_samples.iterrows():
+        age = _pg.sample_age_from_group(row['age'], config)
+        sex = _pg.translate_sex(row['sex'])
+        hh_role = _pg.translate_hh_role(row['role'])
+        agent = Agent(agent_id=next_id, age=age, sex=sex, hh_role=hh_role)
+        pool.append(agent)
+        next_id += 1
+
+    logger.info("Created %d agents from IPF", len(pool))
+
+    # ── Step 5: Match individuals to households ──
+    logger.info("IPF Step 5: Matching individuals to households")
+    agents, households, next_id, next_hh_id = _match_pool_to_households(
+        pool, households, constraints, next_id, next_hh_id,
+    )
+
+    ipf_stats = {'household': hh_fit_stats, 'population': pop_fit_stats}
+    return agents, households, next_id, next_hh_id, ipf_stats
+
+
+def run_constrained_ipf_engine(
+    population_data: pd.DataFrame,
+    household_data: pd.DataFrame,
+    car_data: Optional[pd.DataFrame],
+    constraints: Dict,
+    config,
+    start_agent_id: int = 1,
+    start_household_id: int = 1,
+) -> Tuple[List["Agent"], List["Household"], int, int, Dict]:
+    """Run the constrained-IPF synthesis engine.
+
+    Returns:
+        ``(agents, households, next_agent_id, next_household_id, ipf_stats)``
+    """
+    from gbgsynth.models import Agent, Household
+    from gbgsynth.helpers import housing_assigner as _ha
+
+    min_gap = constraints.get('parent_child_age_gap_min', 18)
+    max_diff = constraints.get('partner_age_difference_max', 15)
+
+    cipf = ConstrainedIPF(
+        min_parent_age_gap=min_gap,
+        max_partner_age_diff=max_diff,
+    )
+
+    # ── Step 1: Fit ──
+    logger.info("Constrained IPF Step 1: Fitting archetype counts to marginals")
+    archetype_counts = cipf.fit(household_data, population_data)
+
+    logger.info("Fitted %d archetypes", len(archetype_counts))
+    for name, count in sorted(archetype_counts.items(), key=lambda x: -x[1]):
+        if count > 0:
+            logger.info("  %s: %d", name, count)
+
+    # ── Step 2: Sample ──
+    logger.info("Constrained IPF Step 2: Sampling complete households")
+    sampled = cipf.sample_households(archetype_counts, random_state=None)
+    logger.info("Sampled %d complete households", len(sampled))
+
+    # ── Step 3: Build objects ──
+    logger.info("Constrained IPF Step 3: Creating household and agent objects")
+
+    hh_type_col = 'Hustyp' if 'Hustyp' in household_data.columns else 'house_type'
+    count_col = 'Antal' if 'Antal' in household_data.columns else household_data.columns[-1]
+    hh_type_marginal = household_data.groupby(hh_type_col)[count_col].sum()
+    total_hh_type = hh_type_marginal.sum()
+    hh_type_probs = hh_type_marginal / total_hh_type
+
+    agents: List[Agent] = []
+    households: List[Household] = []
+    next_id = start_agent_id
+    next_hh_id = start_household_id
+
+    for hh_data in sampled:
+        ht_label = np.random.choice(hh_type_probs.index, p=hh_type_probs.values)
+        house_type = _ha.parse_house_type(ht_label)
+        hh = Household(
+            household_id=next_hh_id,
+            size=hh_data['size'],
+            house_type=house_type,
+            cars=0,
+            assigned_hustyp=ht_label,
+        )
+        households.append(hh)
+        next_hh_id += 1
+
+        for member in hh_data['members']:
+            agent = Agent(
+                agent_id=next_id,
+                age=member['age'],
+                sex=member['sex'],
+                hh_role=member['role'],
+            )
+            hh.add_member(agent)
+            agents.append(agent)
+            next_id += 1
+
+    logger.info("Created %d households with %d agents", len(households), len(agents))
+
+    # ── Step 4: Fit statistics ──
+    fit_stats = cipf.compute_fit_statistics(household_data, population_data)
+    ipf_stats = {
+        'constrained_ipf': fit_stats,
+        'archetype_counts': archetype_counts,
+        'iterations': fit_stats.get('iterations', 0),
+        'converged': fit_stats.get('converged', False),
+    }
+
+    logger.info(
+        "Constrained IPF fit: RMSE=%.2f, HH error=%d, Pop error=%d",
+        fit_stats['rmse'],
+        fit_stats['fitted_households'] - fit_stats['target_households'],
+        fit_stats['fitted_population'] - fit_stats['target_population'],
+    )
+
+    return agents, households, next_id, next_hh_id, ipf_stats
+
+
+def _match_pool_to_households(
+    pool: List["Agent"],
+    households: List["Household"],
+    constraints: Dict,
+    next_agent_id: int,
+    next_household_id: int,
+) -> Tuple[List["Agent"], List["Household"], int, int]:
+    """Match an individual pool to households (IPF post-processing).
+
+    Returns ``(agents, households, next_agent_id, next_household_id)``.
+    """
+    from gbgsynth.models import Household
+
+    hh_by_size: Dict[int, List] = {}
+    for hh in households:
+        hh_by_size.setdefault(hh.size, []).append(hh)
+
+    adults_cohab = [a for a in pool if a.is_adult() and a.hh_role == 'cohabiting']
+    adults_single = [a for a in pool if a.is_adult() and a.hh_role == 'single']
+    children = [a for a in pool if a.is_child()]
+
+    random.shuffle(adults_cohab)
+    random.shuffle(adults_single)
+    random.shuffle(children)
+
+    multi_hhs = sorted(
+        [hh for hh in households if hh.size >= 2],
+        key=lambda h: h.size, reverse=True,
+    )
+
+    # Phase 1: couples
+    max_age_diff = constraints.get('partner_age_difference_max', 15)
+    males = [a for a in adults_cohab if a.sex == 'male']
+    females = [a for a in adults_cohab if a.sex == 'female']
+    couples = 0
+
+    for hh in multi_hhs:
+        if not hh.can_fit(2):
+            continue
+        for male in males:
+            if male.household_id is not None:
+                continue
+            for female in females:
+                if female.household_id is not None:
+                    continue
+                if abs(male.age - female.age) <= max_age_diff:
+                    hh.add_member(male)
+                    hh.add_member(female)
+                    couples += 1
+                    break
+            else:
+                continue
+            break
+    logger.info("Formed %d couples", couples)
+
+    # Phase 2: children
+    min_gap = constraints.get('parent_child_age_gap_min', 18)
+    children_sorted = sorted(children, key=lambda c: c.age)
+    hhs_with_adults = sorted(
+        [hh for hh in multi_hhs if hh.members and hh.can_fit()],
+        key=lambda h: h.size - len(h.members), reverse=True,
+    )
+    ch_assigned = 0
+    for child in children_sorted:
+        if child.household_id is not None:
+            continue
+        for hh in hhs_with_adults:
+            if not hh.can_fit():
+                continue
+            head = hh.head
+            if head and (head.age - child.age) >= min_gap:
+                hh.add_member(child)
+                ch_assigned += 1
+                break
+    logger.info("Assigned %d children", ch_assigned)
+
+    # Phase 3: remaining cohabiting
+    for hh in multi_hhs:
+        if not hh.can_fit():
+            continue
+        for adult in adults_cohab:
+            if adult.household_id is None and hh.can_fit():
+                hh.add_member(adult)
+
+    # Phase 4: singles
+    singles_assigned = 0
+    for single in adults_single:
+        if single.household_id is not None:
+            continue
+        for hh in hh_by_size.get(1, []):
+            if hh.is_full():
+                continue
+            hh.add_member(single)
+            singles_assigned += 1
+            break
+    logger.info("Assigned %d singles", singles_assigned)
+
+    # Phase 5: redistribute
+    for agent in pool:
+        if agent.household_id is not None:
+            continue
+        for hh in households:
+            if hh.can_fit():
+                hh.add_member(agent)
+                break
+
+    # Phase 6: overflow
+    still_remaining = [a for a in pool if a.household_id is None]
+    if still_remaining:
+        logger.warning("%d individuals unmatched — creating overflow households",
+                       len(still_remaining))
+        for agent in still_remaining:
+            hh = Household(household_id=next_household_id, size=1)
+            hh.add_member(agent)
+            households.append(hh)
+            next_household_id += 1
+
+    agents = []
+    for hh in households:
+        agents.extend(hh.members)
+
+    return agents, households, next_agent_id, next_household_id

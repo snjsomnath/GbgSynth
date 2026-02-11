@@ -75,7 +75,8 @@ class GbgArea:
         return f"GbgArea('{self.area_name}', year={self.year}, {status})"
 
     def generate(self, buildings: Optional[pd.DataFrame] = None,
-                 allocate_dwellings: bool = True) -> 'GbgArea':
+                 allocate_dwellings: bool = True,
+                 engine: str = 'topdown') -> 'GbgArea':
         """
         Generate synthetic population for this area.
 
@@ -90,6 +91,8 @@ class GbgArea:
                       spatial linking.
             allocate_dwellings: If True (default), fetch dwelling data and
                               match households to dwelling units.
+            engine: Synthesis algorithm — ``'topdown'`` (default),
+                ``'ipf'``, or ``'constrained_ipf'``.
 
         Returns:
             self (for method chaining)
@@ -134,7 +137,7 @@ class GbgArea:
         }
 
         # Synthesize
-        synthesizer = PopulationSynthesizer(self.config)
+        synthesizer = PopulationSynthesizer(self.config, engine=engine)
         self.individuals, self.households = synthesizer.synthesize(
             population_data=population_data,
             household_data=household_data,

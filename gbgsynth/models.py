@@ -150,6 +150,8 @@ class Agent:
     income: Optional[float] = None
     income_decile: Optional[int] = None
     income_source: Optional[str] = None
+    income_standard: Optional[str] = None
+    low_income: bool = False
     education: Optional[str] = None
     household_id: Optional[int] = None
 
