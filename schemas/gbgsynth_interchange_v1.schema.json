@@ -1,0 +1,227 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/GbgSynth/sweloadsim-interchange/v1.0.0/schema.json",
+  "title": "GbgSynth ↔ SweLoadSim Interchange Format",
+  "description": "Schema for population data exchanged between GbgSynth (synthetic population generator) and SweLoadSim (household load simulator). Version changes require coordinated updates in both projects.",
+  "type": "object",
+  "required": ["schema_version", "metadata", "households"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.1.0",
+      "description": "Schema version. Both exporter and importer must agree on this exact value."
+    },
+    "metadata": {
+      "type": "object",
+      "required": ["source", "export_timestamp"],
+      "properties": {
+        "source": {
+          "type": "string",
+          "description": "Name of the tool that produced this file."
+        },
+        "area_code": {
+          "type": "string",
+          "description": "Statistical area code (primärområde)."
+        },
+        "area_name": {
+          "type": "string",
+          "description": "Human-readable area name."
+        },
+        "year": {
+          "type": "integer",
+          "description": "Reference year for the population."
+        },
+        "total_households": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "total_individuals": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "export_timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO 8601 timestamp of export."
+        },
+        "target_simulator": {
+          "type": "string"
+        },
+        "prognosis": {
+          "type": "object",
+          "description": "Present only when the population was scaled using demographic prognosis.",
+          "properties": {
+            "base_year": { "type": "integer" },
+            "target_year": { "type": "integer" },
+            "mel_code": { "type": "string" },
+            "mel_name": { "type": "string" },
+            "base_population": { "type": "integer" },
+            "target_population": { "type": "integer" },
+            "overall_growth": { "type": "number" }
+          }
+        }
+      }
+    },
+    "export_config": {
+      "type": "object",
+      "description": "Configuration used during export, for reproducibility."
+    },
+    "households": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/household"
+      }
+    },
+    "summary": {
+      "type": "object",
+      "description": "Aggregate statistics over all households."
+    }
+  },
+  "$defs": {
+    "housing_type": {
+      "type": "string",
+      "enum": ["VILLA", "APARTMENT"],
+      "description": "Dwelling type. Maps to SweLoadSim HousingType enum."
+    },
+    "heating_type": {
+      "type": "string",
+      "enum": ["DISTRICT_HEATING", "HEAT_PUMP", "DIRECT_ELECTRIC", "WOOD_PELLET"],
+      "description": "Primary heating system. Maps to SweLoadSim HeatingType enum. Note: GAS is not a valid SweLoadSim type; exporter should map it to DIRECT_ELECTRIC."
+    },
+    "building_era": {
+      "type": "string",
+      "enum": ["pre_1960", "1960_1975", "1976_1990", "1991_2010", "post_2010"],
+      "description": "Construction era. Maps to SweLoadSim BuildingEra enum values."
+    },
+    "employment_status": {
+      "type": "string",
+      "enum": ["FULL_TIME", "PART_TIME", "STUDENT", "RETIRED"],
+      "description": "Employment/activity status. Maps to SweLoadSim EmploymentStatus enum."
+    },
+    "age_group": {
+      "type": "string",
+      "enum": ["0-6", "7-12", "13-17", "18-30", "30-50", "50-65", "65+"],
+      "description": "Age group bin used by SweLoadSim."
+    },
+    "education_level": {
+      "type": "string",
+      "enum": ["pre_secondary", "secondary", "post_secondary", "unknown", "child"],
+      "description": "Educational attainment level. Mapped from Swedish census categories (Förgymnasial, Gymnasial, Eftergymnasial). Children (<18) get 'child'."
+    },
+    "income_source": {
+      "type": "string",
+      "enum": ["work", "unemployment", "studies", "pension", "disability", "sickness", "parental_leave", "financial_support", "no_income"],
+      "description": "Primary income source from census table 20_HuvudInk_PRI.px. Only assigned to adults 20+."
+    },
+    "luxury_level": {
+      "type": "string",
+      "enum": ["STANDARD", "HIGH"]
+    },
+    "member": {
+      "type": "object",
+      "required": ["age_group", "status"],
+      "properties": {
+        "age_group": { "$ref": "#/$defs/age_group" },
+        "age_exact": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 120,
+          "description": "Exact age (informational, not consumed by SweLoadSim)."
+        },
+        "sex": {
+          "type": "string",
+          "enum": ["male", "female"],
+          "description": "Biological sex (informational, not consumed by SweLoadSim)."
+        },
+        "status": { "$ref": "#/$defs/employment_status" },
+        "education_level": {
+          "$ref": "#/$defs/education_level",
+          "description": "Educational attainment (informational, not consumed by SweLoadSim)."
+        },
+        "income_source": {
+          "$ref": "#/$defs/income_source",
+          "description": "Primary income source (informational, not consumed by SweLoadSim)."
+        },
+        "income_sek": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "Annual income in SEK, estimated from area-specific median income by education × age × sex (informational)."
+        }
+      }
+    },
+    "envelope": {
+      "type": "object",
+      "description": "Building envelope parameters for 5R1C heating model. All values are typological assumptions from GbgSynth, not measurements.",
+      "properties": {
+        "u_walls": { "type": "number", "minimum": 0, "description": "Wall U-value [W/(m²·K)]" },
+        "u_roof": { "type": "number", "minimum": 0, "description": "Roof U-value [W/(m²·K)]" },
+        "u_floor": { "type": "number", "minimum": 0, "description": "Floor U-value [W/(m²·K)]" },
+        "u_windows": { "type": "number", "minimum": 0, "description": "Window U-value [W/(m²·K)]" },
+        "wall_area_m2": { "type": "number", "minimum": 0, "description": "External wall area [m²]" },
+        "roof_area_m2": { "type": "number", "minimum": 0, "description": "Roof area [m²]" },
+        "floor_area_ground_m2": { "type": "number", "minimum": 0, "description": "Ground-contact floor area [m²]" },
+        "window_area_m2": { "type": "number", "minimum": 0, "description": "Total window area [m²]" },
+        "window_to_floor_ratio": { "type": "number", "minimum": 0, "maximum": 1, "description": "Assumed window ÷ floor area ratio" },
+        "building_height_m": { "type": "number", "minimum": 0 },
+        "num_stories": { "type": "integer", "minimum": 1 },
+        "ach_infiltration": { "type": "number", "minimum": 0, "description": "Infiltration ACH [1/h]" },
+        "ach_ventilation": { "type": "number", "minimum": 0, "description": "Mechanical ventilation ACH [1/h]" },
+        "heat_recovery_efficiency": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "household": {
+      "type": "object",
+      "required": ["household_id", "area_m2", "housing_type", "heating_type", "members"],
+      "properties": {
+        "household_id": {
+          "type": "integer",
+          "description": "Unique household identifier within this export."
+        },
+        "area_m2": {
+          "type": "number",
+          "minimum": 1,
+          "description": "Heated floor area [m²]."
+        },
+        "housing_type": { "$ref": "#/$defs/housing_type" },
+        "heating_type": { "$ref": "#/$defs/heating_type" },
+        "luxury_level": { "$ref": "#/$defs/luxury_level" },
+        "has_ev": {
+          "type": "boolean",
+          "description": "Whether household has an electric vehicle."
+        },
+        "has_summerhouse": {
+          "type": "boolean",
+          "description": "Whether household has a summer house (affects weekend absence)."
+        },
+        "solar_pv_kw": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "Solar PV system size [kWp], null if none."
+        },
+        "battery_kwh": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "Battery storage capacity [kWh], null if none."
+        },
+        "num_cars": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "income_decile": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "description": "Household income decile (1=lowest, 10=highest)."
+        },
+        "building_era": { "$ref": "#/$defs/building_era" },
+        "envelope": { "$ref": "#/$defs/envelope" },
+        "members": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/member" }
+        }
+      }
+    }
+  }
+}

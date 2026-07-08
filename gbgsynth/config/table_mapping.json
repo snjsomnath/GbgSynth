@@ -1,0 +1,293 @@
+{
+  "description": "Mapping configuration for Gothenburg PxWeb tables",
+  "version": "1.1",
+  "base_url": "https://pxweb.goteborg.se/api/v1/sv/1. Göteborg och dess delområden/Primärområden/",
+  
+  "tables": {
+    "BEFOLKNING_HH": {
+      "id": "Befolkning/Folkmängd/Folkmängd helår/63_FolkmHHtypPRI.px",
+      "description": "Population by household type, age, and sex",
+      "variables": {
+        "Område": "area",
+        "År": "year",
+        "Ålder": "age_group",
+        "Kön": "sex",
+        "Hushållstyp": "hh_role"
+      },
+      "value_mappings": {
+        "sex": {
+          "Män": "male",
+          "Man": "male",
+          "Kvinnor": "female",
+          "Kvinna": "female"
+        },
+        "hh_role": {
+          "Ensamstående": "single",
+          "Sammanboende": "cohabiting",
+          "Övriga hushåll": "other",
+          "Uppgift saknas": "unknown"
+        }
+      }
+    },
+    
+    "HOUSEHOLD_POSITION": {
+      "id": "Befolkning/Folkmängd/Folkmängd helår/60_FolkmHHStallning_PRI.px",
+      "description": "Population by detailed household position (includes child role), age, and sex",
+      "variables": {
+        "Område": "area",
+        "År": "year",
+        "Ålder": "age_group",
+        "Kön": "sex",
+        "Hushållsställning": "hh_position"
+      },
+      "value_mappings": {
+        "sex": {
+          "Män": "male",
+          "Man": "male",
+          "Kvinnor": "female",
+          "Kvinna": "female"
+        },
+        "hh_position": {
+          "Person i gift par/registrerat partnerskap": "cohabiting",
+          "Personer i samboförhållande": "cohabiting",
+          "Ensamstående förälder": "single",
+          "Barn": "child",
+          "Ensamboende": "single",
+          "Ej ensamboende personer, övriga": "other",
+          "Uppgift saknas (inkl. På kommunen skriven och på institution)": "unknown"
+        }
+      }
+    },
+    
+    "HOUSEHOLD_SIZE": {
+      "id": "Befolkning/Hushåll/31_HHStorlHustyp_PRI.px",
+      "description": "Household size by building type",
+      "variables": {
+        "Område": "area",
+        "År": "year",
+        "Hushållsstorlek": "hh_size",
+        "Hustyp": "house_type"
+      },
+      "value_mappings": {
+        "house_type": {
+          "Småhus": "detached_house",
+          "Flerbostadshus": "apartment",
+          "Specialbostad": "special_housing"
+        }
+      }
+    },
+    
+    "CARS": {
+      "id": "Övrigt/Personbilar/10_Bilar_PRI.px",
+      "description": "Car ownership statistics",
+      "variables": {
+        "Område": "area",
+        "År": "year",
+        "Antal bilar": "car_count"
+      }
+    },
+    
+    "INCOME_SOURCE": {
+      "id": "Inkomst och utbildning/Inkomster/Förvärvsinkomster etc/20_HuvudInk_PRI.px",
+      "description": "Primary income source by sex. NOTE: This table uses numeric area indices, not area names.",
+      "uses_numeric_area_index": true,
+      "variables": {
+        "Område": "area",
+        "Kön": "sex",
+        "Huvudsaklig inkomstkälla": "income_source",
+        "År": "year"
+      },
+      "value_mappings": {
+        "sex": {
+          "Man": "male",
+          "Kvinna": "female"
+        },
+        "income_source": {
+          "Ersättning för arbete": "work",
+          "Ersättning vid arbetslöshet": "unemployment",
+          "Ersättning för studier": "studies",
+          "Pension": "pension",
+          "Ersättning vid långvarigt nedsatt arbetsförmåga": "disability",
+          "Ersättning vid sjukdom": "sickness",
+          "Ersättning vid föräldraledighet eller närståendeomvårdnad": "parental_leave",
+          "Ekonomiskt stöd": "financial_support",
+          "Saknar ersättningar": "no_income"
+        }
+      }
+    },
+
+    "INCOME": {
+      "id": "Inkomst och utbildning/Inkomster/Socioekonomi/10_InkStandard_PRI.px",
+      "description": "Income standard by age and background",
+      "variables": {
+        "Område": "area",
+        "År": "year",
+        "Ålder": "age_group",
+        "Bakgrund": "background",
+        "Inkomststandard": "income_standard"
+      },
+      "value_mappings": {
+        "income_standard": {
+          "Ingår i helårshushåll som inte har låg inkomststandard": "adequate_income",
+          "Ingår i helårshushåll som har låg inkomststandard": "low_income",
+          "Ingår ej i helårshushåll": "not_full_year"
+        }
+      }
+    },
+    
+    "EDUCATION": {
+      "id": "Inkomst och utbildning/Utbildning/10_UtbInr_PRI.px",
+      "description": "Educational attainment by field of study",
+      "variables": {
+        "Område": "area",
+        "År": "year",
+        "Utbildningsnivå": "education_level"
+      },
+      "value_mappings": {
+        "education_level": {
+          "Förgymnasial": "primary",
+          "Gymnasial": "secondary",
+          "Eftergymnasial": "tertiary"
+        }
+      }
+    },
+    
+    "EDUCATION_LEVEL": {
+      "id": "Inkomst och utbildning/Inkomster/Förvärvsinkomster etc/23_InkomsterUtbildning_PRI.px",
+      "description": "Education level distribution by age, sex (from income/education table). Provides Folkmängd counts per education level for adults 18+.",
+      "variables": {
+        "Område": "area",
+        "År": "year",
+        "Ålder": "age_group",
+        "Kön": "sex",
+        "Utbildningsnivå": "education_level",
+        "Tabellvärde": "metric"
+      },
+      "value_mappings": {
+        "sex": {
+          "Man": "male",
+          "Kvinna": "female",
+          "Båda kön": "both"
+        },
+        "education_level": {
+          "Förgymnasial utbildning": "pre_secondary",
+          "Gymnasial utbildning": "secondary",
+          "Eftergymnasial utbildning": "post_secondary",
+          "Uppgift saknas": "unknown",
+          "Totalt (alla utbildningsnivåer)": "total"
+        },
+        "metric": {
+          "Folkmängd": "population",
+          "Medelinkomst": "mean_income",
+          "Medianinkomst": "median_income",
+          "Inkomstsumma": "income_sum"
+        }
+      },
+      "age_groups": {
+        "18-24 år": {"min": 18, "max": 24},
+        "25-34 år": {"min": 25, "max": 34},
+        "35-44 år": {"min": 35, "max": 44},
+        "45-54 år": {"min": 45, "max": 54},
+        "55-64 år": {"min": 55, "max": 64},
+        "65-74 år": {"min": 65, "max": 74},
+        "75- år": {"min": 75, "max": 120},
+        "18- år": {"min": 18, "max": 120}
+      }
+    },
+    
+    "HH_TYPE_CHILDREN": {
+      "id": "Befolkning/Hushåll/10_HHTypBarnU18_PRI.px",
+      "description": "Household type by number of children aged 0-17. Provides counts of HH by type (Ensamstående/Sammanboende/Övriga) crossed with child count (0-4+).",
+      "variables": {
+        "Område": "area",
+        "År": "year",
+        "Hushållstyp": "hh_type",
+        "Antal barn 0-17 år": "num_children"
+      },
+      "value_mappings": {
+        "hh_type": {
+          "Ensamstående": "single",
+          "Sammanboende": "cohabiting",
+          "Övriga hushåll": "other"
+        },
+        "num_children": {
+          "0 barn": "0",
+          "1 barn": "1",
+          "2 barn": "2",
+          "3 barn": "3",
+          "4 barn eller fler": "4+"
+        }
+      }
+    },
+
+    "DWELLING_SIZE": {
+      "id": "Bostäder och byggande/Bostadsbestånd/40_TypArea_PRI.px",
+      "description": "Dwelling count by housing type and floor area",
+      "variables": {
+        "Område": "area",
+        "År": "year",
+        "Hustyp": "house_type",
+        "Bostadsarea (kvm)": "floor_area_range"
+      },
+      "value_mappings": {
+        "house_type": {
+          "Småhus": "detached_house",
+          "Flerbostadshus": "apartment",
+          "Övriga hus": "other"
+        }
+      }
+    }
+  },
+  
+  "age_group_mappings": {
+    "0-17 år": {"min": 0, "max": 17},
+    "18-24 år": {"min": 18, "max": 24},
+    "25-44 år": {"min": 25, "max": 44},
+    "45-64 år": {"min": 45, "max": 64},
+    "65-79 år": {"min": 65, "max": 79},
+    "80+ år": {"min": 80, "max": 100}
+  },
+  
+  "household_size_mappings": {
+    "1 person": 1,
+    "2 personer": 2,
+    "3 personer": 3,
+    "4 personer": 4,
+    "5 personer": 5,
+    "6 eller fler personer": 6,
+    "5+ personer": 5,
+    "Uppgift saknas": 0
+  },
+  
+  "floor_area_mappings": {
+    "-31": {"min": 15, "max": 31, "midpoint": 23},
+    "31-40": {"min": 31, "max": 40, "midpoint": 35},
+    "41-50": {"min": 41, "max": 50, "midpoint": 45},
+    "51-60": {"min": 51, "max": 60, "midpoint": 55},
+    "61-70": {"min": 61, "max": 70, "midpoint": 65},
+    "71-80": {"min": 71, "max": 80, "midpoint": 75},
+    "81-90": {"min": 81, "max": 90, "midpoint": 85},
+    "91-100": {"min": 91, "max": 100, "midpoint": 95},
+    "101-110": {"min": 101, "max": 110, "midpoint": 105},
+    "111-120": {"min": 111, "max": 120, "midpoint": 115},
+    "121-130": {"min": 121, "max": 130, "midpoint": 125},
+    "131-140": {"min": 131, "max": 140, "midpoint": 135},
+    "141-150": {"min": 141, "max": 150, "midpoint": 145},
+    "151-160": {"min": 151, "max": 160, "midpoint": 155},
+    "161-170": {"min": 161, "max": 170, "midpoint": 165},
+    "171-180": {"min": 171, "max": 180, "midpoint": 175},
+    "181-190": {"min": 181, "max": 190, "midpoint": 185},
+    "191-200": {"min": 191, "max": 200, "midpoint": 195},
+    "201-": {"min": 201, "max": 300, "midpoint": 220},
+    "Uppgift saknas": {"min": 50, "max": 80, "midpoint": 65}
+  },
+  
+  "synthesis_constraints": {
+    "partner_age_difference_max": 10,
+    "parent_child_age_gap_min": 18,
+    "adult_age_threshold": 18,
+    "child_age_max": 17,
+    "allow_same_sex_couples": true,
+    "same_sex_couple_fraction": 0.025
+  }
+}
